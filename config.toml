@@ -1,0 +1,17 @@
+# Download
+output_dir = "data/raw"
+timeout = 10
+
+# Storage
+metadata_path = "data/metadata.parquet"
+relabeled_path = "data/relabeled.parquet"
+
+# VLM
+vlm_backend = "openai"            # "gemini" | "openai" | "vllm"
+vlm_model = "gpt-4o-mini"
+vlm_base_url = "http://localhost:8000/v1"
+vlm_prompt = "Describe this image in one concise sentence."
+concurrency = 8
+
+# Secrets: set via environment variable or .env file, NOT here
+# DATAGEN_GEMINI_API_KEY=your_key_here
