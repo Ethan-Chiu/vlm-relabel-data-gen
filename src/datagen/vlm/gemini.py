@@ -12,11 +12,11 @@ class GeminiBackend(VLMBackend):
         self.model = cfg.vlm_model
         self.prompt = cfg.vlm_prompt
 
-    def relabel(self, image_bytes: bytes, original_caption: str) -> str:
+    def call(self, image_bytes: bytes, prompt: str) -> str:
         response = self.client.models.generate_content(
             model=self.model,
             contents=[
-                self.prompt,
+                prompt,
                 types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
             ],
         )

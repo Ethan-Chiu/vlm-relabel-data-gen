@@ -47,7 +47,7 @@ def _process_row(row: dict) -> dict:
     img_bytes = (_worker_img_dir / row["filename"]).read_bytes()
 
     # Stage 2: VLM relabeling
-    row["new_caption"] = _worker_backend.relabel(img_bytes, row["caption"])
+    row["new_caption"] = _worker_backend.call(img_bytes, _worker_cfg.vlm_prompt)
 
     # Stage N: add more CPU stages here (resize, OCR, embedding, filtering…)
 
@@ -103,7 +103,7 @@ def _run_ray(cfg: Config) -> None:
 
         def __call__(self, row: dict) -> dict:
             img_bytes = (self.img_dir / row["filename"]).read_bytes()
-            row["new_caption"] = self.backend.relabel(img_bytes, row["caption"])
+            row["new_caption"] = self.backend.call(img_bytes, cfg.vlm_prompt)
             return row
 
     _src = str(Path(__file__).parent.parent)

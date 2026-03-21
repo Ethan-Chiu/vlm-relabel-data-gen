@@ -13,7 +13,7 @@ class OpenAIBackend(VLMBackend):
         self.model = cfg.vlm_model
         self.prompt = cfg.vlm_prompt
 
-    def relabel(self, image_bytes: bytes, original_caption: str) -> str:
+    def call(self, image_bytes: bytes, prompt: str) -> str:
         b64 = base64.b64encode(image_bytes).decode()
         response = self.client.chat.completions.create(
             model=self.model,
@@ -21,7 +21,7 @@ class OpenAIBackend(VLMBackend):
                 "role": "user",
                 "content": [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    {"type": "text", "text": self.prompt},
+                    {"type": "text", "text": prompt},
                 ],
             }],
         )

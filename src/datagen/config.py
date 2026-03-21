@@ -41,6 +41,7 @@ class Config(BaseSettings):
     # --- Storage ---
     metadata_path: Path = Path("data/metadata.parquet")
     relabeled_path: Path = Path("data/relabeled.parquet")
+    annotated_path: Path = Path("data/annotated.parquet")
 
     # --- VLM ---
     vlm_backend: str = "gemini"          # "gemini" | "vllm"
@@ -49,6 +50,7 @@ class Config(BaseSettings):
     vlm_prompt: str = "Describe this image in one concise sentence."
     concurrency: int = 8          # workers for API backends; set to num_gpus for local models
     num_gpus_per_worker: float = 0  # 0 = CPU/API backends; 1 = one GPU per worker (local models)
+    verify: bool = True           # run verification call and discard spatially incorrect captions
 
     # --- Secrets (set via env or .env, never in config.toml) ---
     gemini_api_key: str = Field(default="", repr=False)

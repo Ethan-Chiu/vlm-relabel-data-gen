@@ -46,7 +46,7 @@ class QwenVLLocalBackend(VLMBackend):
         )
         self.model.eval()
 
-    def relabel(self, image_bytes: bytes, original_caption: str) -> str:
+    def call(self, image_bytes: bytes, prompt: str) -> str:
         import torch
         from PIL import Image
         from qwen_vl_utils import process_vision_info
@@ -57,7 +57,7 @@ class QwenVLLocalBackend(VLMBackend):
             "role": "user",
             "content": [
                 {"type": "image", "image": image},
-                {"type": "text", "text": self.prompt},
+                {"type": "text", "text": prompt},
             ],
         }]
 
