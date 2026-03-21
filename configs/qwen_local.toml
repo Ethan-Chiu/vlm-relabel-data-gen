@@ -1,0 +1,21 @@
+# Qwen3-VL-8B-Instruct — local transformers inference
+#
+# Prerequisites:
+#   uv add transformers accelerate qwen-vl-utils
+#   uv add torch --index-url https://download.pytorch.org/whl/cu124  # adjust for your CUDA
+#   uv add flash-attn --no-build-isolation  # optional but strongly recommended
+#
+# Run:
+#   uv run python scripts/relabel.py --config configs/qwen_local.toml
+
+output_dir = "data/raw"
+metadata_path = "data/metadata.parquet"
+relabeled_path = "data/relabeled.parquet"
+
+vlm_backend = "qwen_local"
+vlm_model = "Qwen/Qwen3-VL-8B-Instruct"
+vlm_prompt = "Describe this image in one concise sentence."
+
+# One worker per GPU — each loads the full 8B model (~16GB VRAM)
+concurrency = 1          # increase if you have multiple GPUs
+num_gpus_per_worker = 1

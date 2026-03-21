@@ -2,12 +2,14 @@ from datagen.config import Config
 from datagen.vlm.base import VLMBackend
 from datagen.vlm.gemini import GeminiBackend
 from datagen.vlm.openai_backend import OpenAIBackend
+from datagen.vlm.qwen_local import QwenVLLocalBackend
 from datagen.vlm.vllm import VLLMBackend
 
 _BACKENDS: dict[str, type[VLMBackend]] = {
     "gemini": GeminiBackend,
     "openai": OpenAIBackend,
-    "vllm": VLLMBackend,
+    "qwen_local": QwenVLLocalBackend,  # local transformers inference
+    "vllm": VLLMBackend,               # vLLM server (also works for Qwen via vllm serve)
 }
 
 

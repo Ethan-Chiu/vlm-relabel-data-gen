@@ -1,0 +1,20 @@
+# Qwen3-VL-8B-Instruct — via vLLM server (recommended for high throughput)
+#
+# Start the server first (on the GPU machine):
+#   vllm serve Qwen/Qwen3-VL-8B-Instruct --port 8000 --max-model-len 8192
+#
+# Run:
+#   uv run python scripts/relabel.py --config configs/qwen_vllm.toml
+
+output_dir = "data/raw"
+metadata_path = "data/metadata.parquet"
+relabeled_path = "data/relabeled.parquet"
+
+vlm_backend = "vllm"
+vlm_model = "Qwen/Qwen3-VL-8B-Instruct"
+vlm_base_url = "http://localhost:8000/v1"
+vlm_prompt = "Describe this image in one concise sentence."
+
+# Many workers hit the same vLLM server — it batches requests internally
+concurrency = 16
+num_gpus_per_worker = 0  # workers are just HTTP clients, no GPU needed

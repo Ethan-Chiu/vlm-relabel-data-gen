@@ -47,11 +47,18 @@ class Config(BaseSettings):
     vlm_model: str = "gemini-2.0-flash"
     vlm_base_url: str = "http://localhost:8000/v1"
     vlm_prompt: str = "Describe this image in one concise sentence."
-    concurrency: int = 8
+    concurrency: int = 8          # workers for API backends; set to num_gpus for local models
+    num_gpus_per_worker: float = 0  # 0 = CPU/API backends; 1 = one GPU per worker (local models)
 
     # --- Secrets (set via env or .env, never in config.toml) ---
     gemini_api_key: str = Field(default="", repr=False)
     openai_api_key: str = Field(default="", repr=False)
+
+    def __reduce__(self):
+        # ProcessPoolExecutor pickles everything sent to workers. Local subclasses
+        # created inside load() have no importable path and can't be pickled.
+        # Serialize as plain field values and reconstruct as the base Config class.
+        return (_config_from_dict, (self.model_dump(),))
 
     @classmethod
     def settings_customise_sources(
@@ -65,6 +72,11 @@ class Config(BaseSettings):
             kwargs["dotenv_settings"],     # .env file
             TomlConfigSettingsSource(settings_cls),  # config.toml
         )                                  # defaults = lowest priority
+
+
+def _config_from_dict(data: dict) -> Config:
+    """Pickle reconstruction helper — must be module-level to be importable."""
+    return Config.model_validate(data)
 
 
 def load(toml_file: str = "config.toml") -> Config:
