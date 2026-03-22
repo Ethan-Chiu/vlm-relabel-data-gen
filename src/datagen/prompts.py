@@ -53,6 +53,19 @@ Requirements:
 - Be concise and action-relevant\
 """
 
+TWO_CALL_GENERATE = """\
+You are annotating images for robot manipulation training.
+
+Original caption: {original_caption}
+
+Look at the image carefully. Write a single natural paragraph that:
+- Describes the spatial layout (what is where, near/far, left/right)
+- Uniquely identifies each object using spatial and visual cues
+- Notes free space and best approach directions for manipulation
+
+Be concise, factual, and natural — like a scene briefing for a robot.\
+"""
+
 VERIFY = """\
 Look at this image and the caption below. Answer only YES or NO:
 Does the caption contain any spatial claims that are clearly \

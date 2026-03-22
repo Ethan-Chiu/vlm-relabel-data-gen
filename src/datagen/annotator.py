@@ -1,26 +1,31 @@
-"""Multi-stage robotic annotation pipeline.
+"""Robotic annotation pipelines.
 
-For each image the annotator runs three VLM calls in parallel:
-  A — spatial scene description
-  B — object-centric referring expressions
-  C — action-conditioned caption
+Two pipelines are available:
 
-Optionally, a fourth verification call checks each output for spatial
-errors and discards any caption that fails (sets it to None).
+  RoboticAnnotator  — 3 parallel VLM calls (Type A / B / C) + optional verification
+  TwoCallAnnotator  — 1 generate call + optional verification
 
-                     ┌─ call A ─┐
-image + caption ─────┼─ call B ─┼──► [verify A, B, C in parallel] ──► result dict
-                     └─ call C ─┘
+Both share the same verify_caption() primitive and the same outer
+ProcessPoolExecutor infrastructure.
 
-The inner ThreadPoolExecutor is created once per annotator instance (i.e.
-once per worker process) and reused across all rows — no per-row overhead.
+Execution model
+───────────────
+Outer parallelism  ProcessPoolExecutor — one process per CPU core, handles rows
+Inner parallelism  ThreadPoolExecutor  — only used by RoboticAnnotator to run
+                                         A/B/C and their verifications in parallel;
+                                         TwoCallAnnotator needs no inner pool
+
+                       ┌─ call A ─┐
+Robotic:  img+cap ─────┼─ call B ─┼──► [verify A, B, C in parallel] ──► dict
+                       └─ call C ─┘
+
+Two-call: img+cap ─── call 1 (generate) ──► verify ──► spatial_caption
 """
 
 from __future__ import annotations
 
-import textwrap
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -31,41 +36,32 @@ from datagen import prompts
 from datagen.config import Config
 from datagen.vlm.base import VLMBackend
 
-# Caption types produced by this pipeline
-CAPTION_TYPES = ("type_a", "type_b", "type_c")
 
-# ── Worker process state (module-level, initialized once per process) ─────────
-_worker_annotator: "RoboticAnnotator | None" = None
-_worker_img_dir: Path | None = None
-_worker_cfg: Config | None = None
+# ── Shared verification primitive ─────────────────────────────────────────────
 
+def verify_caption(backend: VLMBackend, image_bytes: bytes, caption: str) -> bool:
+    """Return True if the caption contains spatial errors (should be discarded).
 
-def _worker_init(cfg: Config) -> None:
-    global _worker_annotator, _worker_img_dir, _worker_cfg
-    from datagen.vlm import get_backend
-    _worker_cfg = cfg
-    _worker_img_dir = cfg.output_dir
-    _worker_annotator = RoboticAnnotator(backend=get_backend(cfg), verify=cfg.verify)
+    Reused by both RoboticAnnotator and TwoCallAnnotator.
+    """
+    answer = backend.call(image_bytes, prompts.VERIFY.format(caption=caption))
+    return answer.strip().upper().startswith("YES")
 
 
-def _annotate_row(row: dict) -> dict:
-    img_bytes = (_worker_img_dir / row["filename"]).read_bytes()
-    annotations = _worker_annotator.annotate(img_bytes, row["caption"])
-    return {**row, **annotations}
-
-
-# ── RoboticAnnotator ──────────────────────────────────────────────────────────
+# ── RoboticAnnotator (3-call parallel pipeline) ───────────────────────────────
 
 class RoboticAnnotator:
-    """Runs the 3-stage annotation pipeline for a single image.
+    """Runs Type A / B / C calls in parallel, then verifies each in parallel.
 
-    Designed to be instantiated once per worker process and reused across rows.
+    Instantiated once per worker process; the inner ThreadPoolExecutor is
+    persistent and reused across all rows.
     """
+
+    CAPTION_TYPES = ("type_a", "type_b", "type_c")
 
     def __init__(self, backend: VLMBackend, verify: bool = True) -> None:
         self._backend = backend
         self._verify = verify
-        # Persistent pool: 3 threads for A/B/C calls, reused across all rows
         self._pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="vlm")
 
     def annotate(self, image_bytes: bytes, original_caption: str) -> dict:
@@ -82,7 +78,6 @@ class RoboticAnnotator:
         return results
 
     def _run_parallel(self, prompt_map: dict[str, str], image_bytes: bytes) -> dict:
-        """Submit all prompts concurrently, collect results."""
         futures = {
             key: self._pool.submit(self._backend.call, image_bytes, prompt)
             for key, prompt in prompt_map.items()
@@ -97,22 +92,14 @@ class RoboticAnnotator:
         return results
 
     def _run_verification(self, image_bytes: bytes, results: dict) -> dict:
-        """Run verification for all non-None captions in parallel.
-        Discard (set to None) any caption the model flags as spatially wrong.
-        """
         to_verify = {k: v for k, v in results.items() if v is not None}
-        verify_futures = {
-            key: self._pool.submit(
-                self._backend.call,
-                image_bytes,
-                prompts.VERIFY.format(caption=caption),
-            )
+        futures = {
+            key: self._pool.submit(verify_caption, self._backend, image_bytes, caption)
             for key, caption in to_verify.items()
         }
-        for key, future in verify_futures.items():
+        for key, future in futures.items():
             try:
-                answer = future.result().strip().upper()
-                if answer.startswith("YES"):
+                if future.result():
                     logger.debug(f"{key} discarded by verification")
                     results[key] = None
             except Exception as e:
@@ -123,18 +110,70 @@ class RoboticAnnotator:
         self._pool.shutdown(wait=False)
 
 
-# ── Pipeline entry point ──────────────────────────────────────────────────────
+# ── TwoCallAnnotator (generate → verify) ──────────────────────────────────────
 
-def run(cfg: Config) -> None:
-    """Annotate all rows in metadata_path and write to annotated_path."""
+class TwoCallAnnotator:
+    """Generate one spatial caption, then optionally verify it.
+
+    No inner thread pool needed — the two calls are sequential by design.
+    """
+
+    CAPTION_TYPES = ("spatial_caption",)
+
+    def __init__(self, backend: VLMBackend, verify: bool = True) -> None:
+        self._backend = backend
+        self._verify = verify
+
+    def annotate(self, image_bytes: bytes, original_caption: str) -> dict:
+        caption = self._backend.call(
+            image_bytes,
+            prompts.TWO_CALL_GENERATE.format(original_caption=original_caption),
+        )
+        if self._verify and verify_caption(self._backend, image_bytes, caption):
+            logger.debug("spatial_caption discarded by verification")
+            caption = None
+        return {"spatial_caption": caption}
+
+
+# ── Worker process state ───────────────────────────────────────────────────────
+# Module-level globals, initialized once per worker process via the initializer.
+
+_worker_annotator: RoboticAnnotator | TwoCallAnnotator | None = None
+_worker_img_dir: Path | None = None
+
+
+def _worker_init(cfg: Config, pipeline: str) -> None:
+    global _worker_annotator, _worker_img_dir
+    from datagen.vlm import get_backend
+    backend = get_backend(cfg)
+    _worker_img_dir = cfg.output_dir
+    if pipeline == "two-call":
+        _worker_annotator = TwoCallAnnotator(backend=backend, verify=cfg.verify)
+    else:
+        _worker_annotator = RoboticAnnotator(backend=backend, verify=cfg.verify)
+
+
+def _annotate_row(row: dict) -> dict:
+    img_bytes = (_worker_img_dir / row["filename"]).read_bytes()
+    return {**row, **_worker_annotator.annotate(img_bytes, row["caption"])}
+
+
+# ── Shared pipeline runner ─────────────────────────────────────────────────────
+
+def run(cfg: Config, pipeline: str = "robotic") -> None:
+    """Run the chosen annotation pipeline over metadata_path.
+
+    pipeline: "robotic"  — Type A / B / C (6 VLM calls with verify)
+              "two-call" — spatial_caption (2 VLM calls with verify)
+    """
     if not cfg.metadata_path.exists():
         raise FileNotFoundError(
             f"Metadata not found at {cfg.metadata_path}. Run the download pipeline first."
         )
 
     logger.info(
-        f"Starting annotation pipeline | backend={cfg.vlm_backend} "
-        f"| concurrency={cfg.concurrency} | verify={cfg.verify}"
+        f"Starting annotation pipeline | pipeline={pipeline} "
+        f"| backend={cfg.vlm_backend} | concurrency={cfg.concurrency} | verify={cfg.verify}"
     )
 
     df = pd.read_parquet(cfg.metadata_path)
@@ -143,11 +182,10 @@ def run(cfg: Config) -> None:
     records = []
     error_counts: dict[str, int] = defaultdict(int)
 
-    from concurrent.futures import ProcessPoolExecutor, as_completed
     with ProcessPoolExecutor(
         max_workers=cfg.concurrency,
         initializer=_worker_init,
-        initargs=(cfg,),
+        initargs=(cfg, pipeline),
     ) as executor:
         futures = {
             executor.submit(_annotate_row, row.to_dict()): i
@@ -163,12 +201,15 @@ def run(cfg: Config) -> None:
     cfg.annotated_path.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_parquet(cfg.annotated_path, index=False)
 
-    # Summary
+    caption_types = (
+        TwoCallAnnotator.CAPTION_TYPES if pipeline == "two-call"
+        else RoboticAnnotator.CAPTION_TYPES
+    )
     logger.info(f"Done: {len(records)}/{len(df)} succeeded → {cfg.annotated_path}")
-    for caption_type in CAPTION_TYPES:
-        if caption_type in result_df.columns:
-            kept = result_df[caption_type].notna().sum()
-            logger.info(f"  {caption_type}: {kept}/{len(result_df)} kept after verification")
+    for col in caption_types:
+        if col in result_df.columns:
+            kept = result_df[col].notna().sum()
+            logger.info(f"  {col}: {kept}/{len(result_df)} kept after verification")
     if error_counts:
         logger.warning(
             "Row errors: " + ", ".join(f"{k}: {v}" for k, v in error_counts.items())

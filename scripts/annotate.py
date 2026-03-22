@@ -1,14 +1,18 @@
 #!/usr/bin/env python
-"""Run the multi-stage robotic annotation pipeline.
+"""Run a robotic annotation pipeline.
 
-Produces Type A (spatial layout), Type B (object referring), and
-Type C (action-conditioned) captions for each image, with optional
-verification that discards spatially incorrect outputs.
+Pipelines
+─────────
+  robotic   3 parallel VLM calls → Type A (spatial layout) + Type B (referring)
+            + Type C (action-conditioned), each optionally verified.  [default]
+
+  two-call  1 generate call → one spatial caption, optionally verified.
 
 Usage:
     uv run python scripts/annotate.py
+    uv run python scripts/annotate.py --pipeline two-call
+    uv run python scripts/annotate.py --pipeline robotic --no-verify
     uv run python scripts/annotate.py --config configs/qwen_vllm.toml
-    uv run python scripts/annotate.py --no-verify
 """
 
 import argparse
@@ -21,8 +25,12 @@ import datagen.config as datagen_config
 from datagen.annotator import run
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Multi-stage robotic VLM annotation")
+    parser = argparse.ArgumentParser(description="Robotic VLM annotation pipeline")
     parser.add_argument("--config", default="config.toml", help="Path to config TOML file")
+    parser.add_argument(
+        "--pipeline", default="robotic", choices=["robotic", "two-call"],
+        help="Pipeline to run (default: robotic)",
+    )
     parser.add_argument("--no-verify", action="store_true", help="Skip verification step")
     args = parser.parse_args()
 
@@ -30,4 +38,4 @@ if __name__ == "__main__":
     if args.no_verify:
         cfg = cfg.model_copy(update={"verify": False})
 
-    run(cfg)
+    run(cfg, pipeline=args.pipeline)
