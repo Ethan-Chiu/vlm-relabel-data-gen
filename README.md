@@ -18,8 +18,8 @@ data-gen/
 │   ├── download.py              # Download images → data/raw/, write metadata.parquet
 │   ├── storage.py               # Parquet read/write helpers
 │   ├── prompts.py               # Prompt templates (TYPE_A/B/C, SCENE_TYPE_A/B/C, VERIFY)
-│   ├── annotator.py             # RoboticAnnotator / TwoCallAnnotator / SceneGraphAnnotator
-│   ├── pipeline.py              # Simple relabeling pipeline (ProcessPoolExecutor / Ray)
+│   ├── annotator.py             # All pipelines: Simple / TwoCall / Robotic / CachedScene
+│   ├── scene_pipeline.py        # Scene graph extraction pipeline (GPU stage)
 │   ├── vlm/
 │   │   ├── base.py              # VLMBackend ABC — one method: call(image_bytes, prompt)
 │   │   ├── openai_backend.py    # OpenAI API (GPT-4o, GPT-4o-mini, …)
@@ -35,8 +35,8 @@ data-gen/
 │
 ├── scripts/
 │   ├── download.py              # Entry point: download images + build metadata index
-│   ├── relabel.py               # Entry point: simple single-caption relabeling
-│   ├── annotate.py              # Entry point: robotic / two-call / scene-graph annotation
+│   ├── annotate.py              # Entry point: all annotation pipelines
+│   ├── extract_scene_graphs.py  # Entry point: GPU scene graph extraction (pre-stage)
 │   ├── setup_models.py          # Download scene-graph model weights
 │   └── show_parquet.py          # Inspect any Parquet file; export PDF report
 │
@@ -48,8 +48,8 @@ data-gen/
 └── data/                        # Generated data (gitignored)
     ├── raw/                     # Downloaded images (000000.jpg, 000001.jpg, …)
     ├── metadata.parquet         # Image index: filename, caption, source_url, size
-    ├── relabeled.parquet        # Simple relabeling output: + new_caption
-    └── annotated.parquet        # Full annotation output: + type_a, type_b, type_c
+    ├── scene_graphs.parquet     # Scene extraction output: + scene_graph, scene_detections
+    └── annotated.parquet        # Annotation output (all pipelines write here)
 ```
 
 ## Data Flow
@@ -59,11 +59,11 @@ scripts/download.py
   └── downloads images → data/raw/
   └── writes data/metadata.parquet
 
-scripts/relabel.py               (simple, single caption per image)
+scripts/annotate.py --pipeline relabel
   └── reads  data/metadata.parquet
-  └── writes data/relabeled.parquet      [+ new_caption]
+  └── writes data/annotated.parquet      [+ new_caption]
 
-scripts/annotate.py              (multi-stage robotic annotation)
+scripts/annotate.py              (robotic annotation, default)
   └── reads  data/metadata.parquet
   └── writes data/annotated.parquet      [+ type_a, type_b, type_c]
 
@@ -77,9 +77,18 @@ scripts/annotate.py --pipeline scene-graph
   └── writes data/annotated.parquet      [+ scene_type_a, scene_type_b, scene_type_c]
 ```
 
-## Annotation Pipeline (annotate.py)
+## Annotation Pipelines (annotate.py)
 
-Three VLM calls run **in parallel** per image, followed by optional verification:
+All pipelines share the same script and write to `annotated.parquet`.
+
+| Pipeline | `--pipeline` | Output columns | VLM calls |
+|---|---|---|---|
+| Simple relabel | `relabel` | `new_caption` | 1 |
+| Two-call | `two-call` | `spatial_caption` | 1–2 |
+| Robotic | `robotic` (default) | `type_a`, `type_b`, `type_c` | 3–6 |
+| Scene-graph | `scene-graph` | `scene_type_a`, `scene_type_b`, `scene_type_c` | 3–6 |
+
+**Robotic pipeline** — three VLM calls in parallel, followed by optional verification:
 
 ```
 image + original_caption
@@ -161,9 +170,8 @@ Config is loaded in priority order (highest first):
 |---|---|---|
 | `output_dir` | `data/raw` | Where downloaded images are saved |
 | `timeout` | `10` | HTTP timeout for image downloads (seconds) |
-| `metadata_path` | `data/metadata.parquet` | Input index for relabel/annotate |
-| `relabeled_path` | `data/relabeled.parquet` | Output of relabel pipeline |
-| `annotated_path` | `data/annotated.parquet` | Output of annotate pipeline |
+| `metadata_path` | `data/metadata.parquet` | Input index for annotation pipelines |
+| `annotated_path` | `data/annotated.parquet` | Output of all annotation pipelines |
 | `scene_ram_weights` | `models/ram_plus_swin_large_14m.pth` | RAM++ weights path |
 | `scene_gdino_config` | `models/GroundingDINO_SwinT_OGC.cfg.py` | GroundingDINO config |
 | `scene_gdino_weights` | `models/groundingdino_swint_ogc.pth` | GroundingDINO weights |
@@ -187,21 +195,17 @@ Config is loaded in priority order (highest first):
 # Setup
 cp .env.example .env              # then fill in your API key
 
-# Download images
+# Download images (config only matters for output_dir / timeout / metadata_path)
 uv run python scripts/download.py
-uv run python scripts/download.py --config configs/qwen_vllm.toml
 
-# Simple relabeling (one new caption per image)
-uv run python scripts/relabel.py
-uv run python scripts/relabel.py --config configs/qwen_vllm.toml
-
-# Multi-stage robotic annotation (Type A + B + C)
-uv run python scripts/annotate.py
+# Annotation (all pipelines write to annotated.parquet)
+uv run python scripts/annotate.py --pipeline relabel                       # single caption
+uv run python scripts/annotate.py                                          # robotic (Type A+B+C)
+uv run python scripts/annotate.py --pipeline two-call
 uv run python scripts/annotate.py --no-verify       # skip verification step
 uv run python scripts/annotate.py --config configs/qwen_vllm.toml
 
 # Inspect output
-uv run python scripts/show_parquet.py                                      # print relabeled.parquet
 uv run python scripts/show_parquet.py data/annotated.parquet               # print annotated.parquet
 uv run python scripts/show_parquet.py --cols filename type_a type_b type_c # specific columns
 uv run python scripts/show_parquet.py --head 20                            # first 20 rows
@@ -221,7 +225,7 @@ uv run python scripts/show_parquet.py data/scene_graphs.parquet --info   # inspe
 uv run python scripts/annotate.py --pipeline scene-graph
 
 # Use vLLM server (start server first)
-vllm serve Qwen/Qwen3-VL-8B-Instruct --port 8000 --max-model-len 8192 --trust-remote-code
+uvx vllm serve Qwen/Qwen3-VL-8B-Instruct --port 8000 --max-model-len 8192 --trust-remote-code
 uv run python scripts/annotate.py --config configs/qwen_vllm.toml
 
 # Override config via env vars (no file editing needed)
@@ -232,13 +236,17 @@ DATAGEN_VERIFY=false uv run python scripts/annotate.py
 
 ## Adding a Processing Stage
 
-All per-row CPU work happens in `_process_row` in `pipeline.py` (for relabeling) and `_annotate_row` in `annotator.py` (for annotation). Add new stages there — they automatically run in parallel across all worker processes.
+All per-row work happens in `_annotate_row` in `annotator.py`. To add a new pipeline, create an annotator class with an `annotate(image_bytes, original_caption) -> dict` method, register it in `_worker_init`, and add it to the `--pipeline` choices in `scripts/annotate.py`.
 
 ```python
-# pipeline.py — _process_row
-def _process_row(row: dict) -> dict:
-    img_bytes = (_worker_img_dir / row["filename"]).read_bytes()
-    row["new_caption"] = _worker_backend.call(img_bytes, _worker_cfg.vlm_prompt)
-    # row["embedding"] = _worker_embedder.embed(img_bytes)   ← add here
-    return row
+# annotator.py — example new annotator
+class MyAnnotator:
+    CAPTION_TYPES = ("my_output",)
+
+    def __init__(self, backend: VLMBackend) -> None:
+        self._backend = backend
+
+    def annotate(self, image_bytes: bytes, original_caption: str) -> dict:
+        result = self._backend.call(image_bytes, "my prompt")
+        return {"my_output": result}
 ```

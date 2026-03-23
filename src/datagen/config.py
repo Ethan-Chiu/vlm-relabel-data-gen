@@ -40,7 +40,6 @@ class Config(BaseSettings):
 
     # --- Storage ---
     metadata_path: Path = Path("data/metadata.parquet")
-    relabeled_path: Path = Path("data/relabeled.parquet")
     annotated_path: Path = Path("data/annotated.parquet")
     scene_graph_path: Path = Path("data/scene_graphs.parquet")  # intermediate scene extraction output
 

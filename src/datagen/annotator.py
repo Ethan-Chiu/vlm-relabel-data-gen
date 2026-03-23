@@ -1,33 +1,31 @@
-"""Robotic annotation pipelines.
+"""All annotation pipelines.
 
-Three pipelines are available:
-
+Pipelines
+─────────
+  SimpleAnnotator     — 1 VLM call with a configurable prompt → new_caption  [relabel]
+  TwoCallAnnotator    — 1 generate call + optional verification → spatial_caption
   RoboticAnnotator    — 3 parallel VLM calls (Type A / B / C) + optional verification
-  TwoCallAnnotator    — 1 generate call + optional verification
-  SceneGraphAnnotator — SceneExtractor → scene_graph → 3 VLM calls + optional verification
+  CachedSceneAnnotator— reads pre-computed scene_graph → 3 VLM calls + optional verification
 
-Both RoboticAnnotator and TwoCallAnnotator share the same verify_caption() primitive
-and the same outer ProcessPoolExecutor infrastructure.
-
-SceneGraphAnnotator runs all heavy GPU models (RAM++, GroundingDINO, SAM, Depth) in
-the worker process. Use concurrency=1 (or one per GPU) in config to avoid OOM.
+All share the same outer ProcessPoolExecutor infrastructure.
 
 Execution model
 ───────────────
-Outer parallelism  ProcessPoolExecutor — one process per CPU core (or GPU), handles rows
-Inner parallelism  ThreadPoolExecutor  — only used by RoboticAnnotator / SceneGraphAnnotator
-                                         to run A/B/C and verifications in parallel;
-                                         TwoCallAnnotator needs no inner pool
+Outer parallelism  ProcessPoolExecutor — one process per CPU core, handles rows
+Inner parallelism  ThreadPoolExecutor  — used by RoboticAnnotator / CachedSceneAnnotator
+                                         to run A/B/C calls in parallel
 
-                       ┌─ call A ─┐
-Robotic:  img+cap ─────┼─ call B ─┼──► [verify A, B, C in parallel] ──► dict
-                       └─ call C ─┘
+Relabel:  img+cap ─── VLM(vlm_prompt) ──► new_caption
 
 Two-call: img+cap ─── call 1 (generate) ──► verify ──► spatial_caption
 
+                       ┌─ call A ─┐
+Robotic:  img+cap ─────┼─ call B ─┼──► [verify in parallel] ──► dict
+                       └─ call C ─┘
+
                                        ┌─ scene call A ─┐
-Scene:    img+cap ─► SceneExtractor ───┼─ scene call B ─┼──► [verify in parallel] ──► dict
-                     → scene_graph     └─ scene call C ─┘
+Scene:    img+cap ─► scene_graph ──────┼─ scene call B ─┼──► [verify in parallel] ──► dict
+          (pre-computed parquet)        └─ scene call C ─┘
 """
 
 from __future__ import annotations
@@ -43,6 +41,22 @@ from tqdm import tqdm
 from datagen import prompts
 from datagen.config import Config
 from datagen.vlm.base import VLMBackend
+
+
+# ── SimpleAnnotator (single configurable VLM call) ────────────────────────────
+
+class SimpleAnnotator:
+    """One VLM call per image using vlm_prompt from config. Outputs new_caption."""
+
+    CAPTION_TYPES = ("new_caption",)
+
+    def __init__(self, backend: VLMBackend, prompt: str) -> None:
+        self._backend = backend
+        self._prompt = prompt
+
+    def annotate(self, image_bytes: bytes, original_caption: str) -> dict:
+        caption = self._backend.call(image_bytes, self._prompt)
+        return {"new_caption": caption}
 
 
 # ── Shared verification primitive ─────────────────────────────────────────────
@@ -215,7 +229,7 @@ class CachedSceneAnnotator:
 # ── Worker process state ───────────────────────────────────────────────────────
 # Module-level globals, initialized once per worker process via the initializer.
 
-_worker_annotator: RoboticAnnotator | TwoCallAnnotator | CachedSceneAnnotator | None = None
+_worker_annotator: SimpleAnnotator | RoboticAnnotator | TwoCallAnnotator | CachedSceneAnnotator | None = None
 _worker_img_dir: Path | None = None
 _worker_pipeline: str = ""
 
@@ -226,7 +240,9 @@ def _worker_init(cfg: Config, pipeline: str) -> None:
     backend = get_backend(cfg)
     _worker_img_dir = cfg.output_dir
     _worker_pipeline = pipeline
-    if pipeline == "two-call":
+    if pipeline == "relabel":
+        _worker_annotator = SimpleAnnotator(backend=backend, prompt=cfg.vlm_prompt)
+    elif pipeline == "two-call":
         _worker_annotator = TwoCallAnnotator(backend=backend, verify=cfg.verify)
     elif pipeline == "scene-graph":
         _worker_annotator = CachedSceneAnnotator(backend=backend, verify=cfg.verify)
@@ -248,9 +264,10 @@ def _annotate_row(row: dict) -> dict:
 def run(cfg: Config, pipeline: str = "robotic") -> None:
     """Run the chosen annotation pipeline over metadata_path.
 
-    pipeline: "robotic"     — Type A / B / C (6 VLM calls with verify)
+    pipeline: "relabel"     — single VLM call with vlm_prompt → new_caption
               "two-call"    — spatial_caption (2 VLM calls with verify)
-              "scene-graph" — SceneExtractor + scene Type A / B / C (3-6 VLM calls)
+              "robotic"     — Type A / B / C (6 VLM calls with verify)
+              "scene-graph" — pre-computed scene_graph → scene Type A / B / C
     """
     if not cfg.metadata_path.exists():
         raise FileNotFoundError(
@@ -305,7 +322,9 @@ def run(cfg: Config, pipeline: str = "robotic") -> None:
     cfg.annotated_path.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_parquet(cfg.annotated_path, index=False)
 
-    if pipeline == "two-call":
+    if pipeline == "relabel":
+        caption_types = SimpleAnnotator.CAPTION_TYPES
+    elif pipeline == "two-call":
         caption_types = TwoCallAnnotator.CAPTION_TYPES
     elif pipeline == "scene-graph":
         caption_types = CachedSceneAnnotator.CAPTION_TYPES

@@ -1,20 +1,21 @@
 #!/usr/bin/env python
-"""Run a robotic annotation pipeline.
+"""Run a VLM annotation pipeline.
 
 Pipelines
 ─────────
-  robotic      3 parallel VLM calls → Type A (spatial layout) + Type B (referring)
-               + Type C (action-conditioned), each optionally verified.  [default]
+  relabel      1 VLM call with vlm_prompt from config → new_caption
 
   two-call     1 generate call → one spatial caption, optionally verified.
 
-  scene-graph  RAM++ → GroundingDINO → SAM → Depth Anything V2 → scene_graph
-               → 3 scene-conditioned VLM calls, each optionally verified.
-               Requires GPU; use concurrency=1 (one worker per GPU).
-               Download weights first: uv run python scripts/setup_models.py
+  robotic      3 parallel VLM calls → Type A (spatial layout) + Type B (referring)
+               + Type C (action-conditioned), each optionally verified.  [default]
+
+  scene-graph  Uses pre-computed scene_graphs.parquet → 3 scene-conditioned VLM calls.
+               Run extract_scene_graphs.py first.
 
 Usage:
     uv run python scripts/annotate.py
+    uv run python scripts/annotate.py --pipeline relabel
     uv run python scripts/annotate.py --pipeline two-call
     uv run python scripts/annotate.py --pipeline scene-graph
     uv run python scripts/annotate.py --pipeline robotic --no-verify
@@ -32,10 +33,11 @@ import datagen.config as datagen_config
 from datagen.annotator import run
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Robotic VLM annotation pipeline")
+    parser = argparse.ArgumentParser(description="VLM annotation pipeline")
     parser.add_argument("--config", default="config.toml", help="Path to config TOML file")
     parser.add_argument(
-        "--pipeline", default="robotic", choices=["robotic", "two-call", "scene-graph"],
+        "--pipeline", default="robotic",
+        choices=["relabel", "two-call", "robotic", "scene-graph"],
         help="Pipeline to run (default: robotic)",
     )
     parser.add_argument("--no-verify", action="store_true", help="Skip verification step")
