@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Large-scale image dataset generation and VLM relabeling pipeline"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "fairscale>=0.4.13",
     "fpdf2>=2.8.7",
     "google-genai>=1.68.0",
     "loguru>=0.7.3",

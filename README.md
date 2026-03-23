@@ -125,20 +125,48 @@ image + original_caption
 
 **Setup:**
 ```bash
-# 1. Install scene dependencies (torch, transformers, etc.)
+# 1. Install scene dependencies
 uv sync --extra scene
+uv add fairscale   # required by RAM++ but not declared as a dependency
 
-# 2. Install packages not on PyPI (do this inside the venv)
-source .venv/bin/activate
-pip install git+https://github.com/IDEA-Research/GroundingDINO.git
-pip install git+https://github.com/xinyu1205/recognize-anything.git
-pip install git+https://github.com/facebookresearch/segment-anything.git
+# 2. Install packages not on PyPI
+uv pip install git+https://github.com/xinyu1205/recognize-anything.git
+uv pip install git+https://github.com/facebookresearch/segment-anything.git
 
-# 3. Download model weights (~10 GB total)
+# 3. GroundingDINO — patch for PyTorch 2.x incompatibilities before building
+git clone --depth=1 https://github.com/IDEA-Research/GroundingDINO.git /tmp/groundingdino
+CU=/tmp/groundingdino/groundingdino/models/GroundingDINO/csrc/MsDeformAttn/ms_deform_attn_cuda.cu
+sed -i 's/\.data<scalar_t>()/.data_ptr<scalar_t>()/g; s/\.data<int64_t>()/.data_ptr<int64_t>()/g' $CU
+sed -i 's/\.type()\.is_cuda()/.is_cuda()/g' $CU
+sed -i 's/AT_DISPATCH_FLOATING_TYPES(value\.type()/AT_DISPATCH_FLOATING_TYPES(value.scalar_type()/g' $CU
+uv pip install --no-build-isolation /tmp/groundingdino
+
+# 4. Patch RAM++ for transformers 4.x (functions moved out of modeling_utils)
+python3 - <<'EOF'
+import site, pathlib
+bert = pathlib.Path(site.getsitepackages()[0]) / "ram/models/bert.py"
+old = ("from transformers.modeling_utils import (\n"
+       "    PreTrainedModel,\n"
+       "    apply_chunking_to_forward,\n"
+       "    find_pruneable_heads_and_indices,\n"
+       "    prune_linear_layer,\n"
+       ")")
+new = ("from transformers.modeling_utils import PreTrainedModel\n"
+       "from transformers.pytorch_utils import (\n"
+       "    apply_chunking_to_forward,\n"
+       "    find_pruneable_heads_and_indices,\n"
+       "    prune_linear_layer,\n"
+       ")")
+bert.write_text(bert.read_text().replace(old, new))
+print("patched", bert)
+EOF
+
+# 5. Download model weights (~10 GB total)
 uv run python scripts/setup_models.py
 
-# 4. Run
-uv run python scripts/annotate.py --config configs/scene_graph.toml --pipeline scene-graph
+# 6. Run
+uv run python scripts/extract_scene_graphs.py --config configs/scene_graph.toml
+uv run python scripts/annotate.py --pipeline scene-graph
 ```
 
 **Hardware:** Requires a GPU with ≥12 GB VRAM (SAM vit_h: ~7 GB, RAM++: ~2 GB, Depth Large: ~1.5 GB).

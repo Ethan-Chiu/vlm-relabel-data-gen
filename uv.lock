@@ -438,6 +438,7 @@ name = "data-gen"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "fairscale" },
     { name = "fpdf2" },
     { name = "google-genai" },
     { name = "loguru" },
@@ -465,6 +466,7 @@ scene = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fairscale", specifier = ">=0.4.13" },
     { name = "fpdf2", specifier = ">=2.8.7" },
     { name = "google-genai", specifier = ">=1.68.0" },
     { name = "huggingface-hub", marker = "extra == 'scene'", specifier = ">=0.23.0" },
@@ -573,6 +575,16 @@ sdist = { url = "https://files.pythonhosted.org/packages/f5/22/900cb125c76b7aaa4
 wheels = [
     { url = "https://files.pythonhosted.org/packages/de/15/545e2b6cf2e3be84bc1ed85613edd75b8aea69807a71c26f4ca6a9258e82/email_validator-2.3.0-py3-none-any.whl", hash = "sha256:80f13f623413e6b197ae73bb10bf4eb0908faf509ad8362c5edeb0be7fd450b4", size = 35604, upload-time = "2025-08-26T13:09:05.858Z" },
 ]
+
+[[package]]
+name = "fairscale"
+version = "0.4.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/08/b3334d7b543ac10dcb129cef4f84723ab696725512f18d69ab3a784b0bf5/fairscale-0.4.13.tar.gz", hash = "sha256:1b797825c427f5dba92253fd0d8daa574e8bd651a2423497775fab1b30cfb768", size = 266261, upload-time = "2022-12-11T18:09:16.892Z" }
 
 [[package]]
 name = "fastapi"

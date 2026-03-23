@@ -20,6 +20,9 @@ uv run python scripts/annotate.py --pipeline scene-graph
 uv run python scripts/setup_models.py                      # download ~10GB weights
 uv run python scripts/extract_scene_graphs.py              # extract scene graphs
 
+# Scene-graph extra install (non-PyPI packages, required once after uv sync --extra scene)
+# See "Scene package install notes" section below for details.
+
 # Inspect results
 uv run python scripts/show_parquet.py
 uv run python scripts/show_parquet.py --pdf report.pdf
@@ -57,3 +60,43 @@ Abstract `VLMBackend` with `call(image_bytes, prompt) -> str`. Concrete backends
 
 ### Storage (`src/datagen/storage.py`)
 All pipelines read/write Parquet via `read_metadata()` / `write_metadata()`. Writes append by reading existing data and concatenating.
+
+## Scene package install notes
+
+After `uv sync --extra scene`, three non-PyPI packages and several patches are required:
+
+```bash
+# 1. Add missing fairscale dependency (RAM++ requires it but doesn't declare it)
+uv add fairscale
+
+# 2. Install RAM++ and SAM
+uv pip install git+https://github.com/xinyu1205/recognize-anything.git
+uv pip install git+https://github.com/facebookresearch/segment-anything.git
+
+# 3. GroundingDINO — must patch for PyTorch 2.x before building
+git clone --depth=1 https://github.com/IDEA-Research/GroundingDINO.git /tmp/groundingdino
+CU=/tmp/groundingdino/groundingdino/models/GroundingDINO/csrc/MsDeformAttn/ms_deform_attn_cuda.cu
+sed -i 's/\.data<scalar_t>()/.data_ptr<scalar_t>()/g; s/\.data<int64_t>()/.data_ptr<int64_t>()/g' $CU
+sed -i 's/\.type()\.is_cuda()/.is_cuda()/g' $CU
+sed -i 's/AT_DISPATCH_FLOATING_TYPES(value\.type()/AT_DISPATCH_FLOATING_TYPES(value.scalar_type()/g' $CU
+uv pip install --no-build-isolation /tmp/groundingdino
+
+# 4. Patch RAM++ bert.py for transformers 4.x (functions moved to pytorch_utils)
+#    In .venv/lib/python3.13/site-packages/ram/models/bert.py, replace:
+#
+#    from transformers.modeling_utils import (
+#        PreTrainedModel,
+#        apply_chunking_to_forward,
+#        find_pruneable_heads_and_indices,
+#        prune_linear_layer,
+#    )
+#
+#    with:
+#
+#    from transformers.modeling_utils import PreTrainedModel
+#    from transformers.pytorch_utils import (
+#        apply_chunking_to_forward,
+#        find_pruneable_heads_and_indices,
+#        prune_linear_layer,
+#    )
+```
