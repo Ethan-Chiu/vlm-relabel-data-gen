@@ -3,16 +3,23 @@
 
 Pipelines
 ─────────
-  robotic   3 parallel VLM calls → Type A (spatial layout) + Type B (referring)
-            + Type C (action-conditioned), each optionally verified.  [default]
+  robotic      3 parallel VLM calls → Type A (spatial layout) + Type B (referring)
+               + Type C (action-conditioned), each optionally verified.  [default]
 
-  two-call  1 generate call → one spatial caption, optionally verified.
+  two-call     1 generate call → one spatial caption, optionally verified.
+
+  scene-graph  RAM++ → GroundingDINO → SAM → Depth Anything V2 → scene_graph
+               → 3 scene-conditioned VLM calls, each optionally verified.
+               Requires GPU; use concurrency=1 (one worker per GPU).
+               Download weights first: uv run python scripts/setup_models.py
 
 Usage:
     uv run python scripts/annotate.py
     uv run python scripts/annotate.py --pipeline two-call
+    uv run python scripts/annotate.py --pipeline scene-graph
     uv run python scripts/annotate.py --pipeline robotic --no-verify
     uv run python scripts/annotate.py --config configs/qwen_vllm.toml
+    uv run python scripts/annotate.py --config configs/scene_graph.toml --pipeline scene-graph
 """
 
 import argparse
@@ -28,7 +35,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Robotic VLM annotation pipeline")
     parser.add_argument("--config", default="config.toml", help="Path to config TOML file")
     parser.add_argument(
-        "--pipeline", default="robotic", choices=["robotic", "two-call"],
+        "--pipeline", default="robotic", choices=["robotic", "two-call", "scene-graph"],
         help="Pipeline to run (default: robotic)",
     )
     parser.add_argument("--no-verify", action="store_true", help="Skip verification step")

@@ -32,11 +32,16 @@ def _build_pdf(df: pd.DataFrame, image_dir: Path, out_path: Path) -> None:
 
     # All caption columns in display order — render whichever exist in the file
     CAPTION_COLUMNS: list[tuple[str, str]] = [
-        ("caption",   "Original caption"),
-        ("new_caption", "Generated caption"),
-        ("type_a",    "Type A — Spatial scene description"),
-        ("type_b",    "Type B — Object-centric referring"),
-        ("type_c",    "Type C — Action-conditioned"),
+        ("caption",          "Original caption"),
+        ("new_caption",      "Generated caption"),
+        ("type_a",           "Type A — Spatial scene description"),
+        ("type_b",           "Type B — Object-centric referring"),
+        ("type_c",           "Type C — Action-conditioned"),
+        ("spatial_caption",  "Spatial caption (two-call)"),
+        ("scene_graph",      "Scene graph"),
+        ("scene_type_a",     "Scene Type A — Grounded spatial description"),
+        ("scene_type_b",     "Scene Type B — Grounded referring expressions"),
+        ("scene_type_c",     "Scene Type C — Grounded action caption"),
     ]
 
     pdf = FPDF()

@@ -42,6 +42,7 @@ class Config(BaseSettings):
     metadata_path: Path = Path("data/metadata.parquet")
     relabeled_path: Path = Path("data/relabeled.parquet")
     annotated_path: Path = Path("data/annotated.parquet")
+    scene_graph_path: Path = Path("data/scene_graphs.parquet")  # intermediate scene extraction output
 
     # --- VLM ---
     vlm_backend: str = "gemini"          # "gemini" | "vllm"
@@ -51,6 +52,19 @@ class Config(BaseSettings):
     concurrency: int = 8          # workers for API backends; set to num_gpus for local models
     num_gpus_per_worker: float = 0  # 0 = CPU/API backends; 1 = one GPU per worker (local models)
     verify: bool = True           # run verification call and discard spatially incorrect captions
+
+    # --- Scene-graph pipeline (RAM++ + GroundingDINO + SAM + Depth Anything V2) ---
+    # Download weights with: uv run python scripts/setup_models.py
+    scene_ram_weights: str = "models/ram_plus_swin_large_14m.pth"
+    scene_gdino_config: str = "models/GroundingDINO_SwinT_OGC.cfg.py"
+    scene_gdino_weights: str = "models/groundingdino_swint_ogc.pth"
+    scene_sam_weights: str = "models/sam_vit_h_4b8939.pth"
+    scene_sam_type: str = "vit_h"         # "vit_h" | "vit_l" | "vit_b"
+    scene_depth_model: str = "depth-anything/Depth-Anything-V2-Large-hf"
+    scene_box_threshold: float = 0.30
+    scene_text_threshold: float = 0.25
+    scene_ram_image_size: int = 384
+    scene_device: str = "cuda"            # "cuda" or "cpu"
 
     # --- Secrets (set via env or .env, never in config.toml) ---
     gemini_api_key: str = Field(default="", repr=False)

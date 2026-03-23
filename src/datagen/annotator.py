@@ -1,18 +1,22 @@
 """Robotic annotation pipelines.
 
-Two pipelines are available:
+Three pipelines are available:
 
-  RoboticAnnotator  — 3 parallel VLM calls (Type A / B / C) + optional verification
-  TwoCallAnnotator  — 1 generate call + optional verification
+  RoboticAnnotator    — 3 parallel VLM calls (Type A / B / C) + optional verification
+  TwoCallAnnotator    — 1 generate call + optional verification
+  SceneGraphAnnotator — SceneExtractor → scene_graph → 3 VLM calls + optional verification
 
-Both share the same verify_caption() primitive and the same outer
-ProcessPoolExecutor infrastructure.
+Both RoboticAnnotator and TwoCallAnnotator share the same verify_caption() primitive
+and the same outer ProcessPoolExecutor infrastructure.
+
+SceneGraphAnnotator runs all heavy GPU models (RAM++, GroundingDINO, SAM, Depth) in
+the worker process. Use concurrency=1 (or one per GPU) in config to avoid OOM.
 
 Execution model
 ───────────────
-Outer parallelism  ProcessPoolExecutor — one process per CPU core, handles rows
-Inner parallelism  ThreadPoolExecutor  — only used by RoboticAnnotator to run
-                                         A/B/C and their verifications in parallel;
+Outer parallelism  ProcessPoolExecutor — one process per CPU core (or GPU), handles rows
+Inner parallelism  ThreadPoolExecutor  — only used by RoboticAnnotator / SceneGraphAnnotator
+                                         to run A/B/C and verifications in parallel;
                                          TwoCallAnnotator needs no inner pool
 
                        ┌─ call A ─┐
@@ -20,6 +24,10 @@ Robotic:  img+cap ─────┼─ call B ─┼──► [verify A, B, C i
                        └─ call C ─┘
 
 Two-call: img+cap ─── call 1 (generate) ──► verify ──► spatial_caption
+
+                                       ┌─ scene call A ─┐
+Scene:    img+cap ─► SceneExtractor ───┼─ scene call B ─┼──► [verify in parallel] ──► dict
+                     → scene_graph     └─ scene call C ─┘
 """
 
 from __future__ import annotations
@@ -135,27 +143,104 @@ class TwoCallAnnotator:
         return {"spatial_caption": caption}
 
 
+# ── CachedSceneAnnotator (uses pre-computed scene_graph text) ─────────────────
+
+class CachedSceneAnnotator:
+    """Run 3 scene-conditioned VLM calls using a pre-computed scene_graph string.
+
+    The scene_graph is produced by scripts/extract_scene_graphs.py and read from
+    scene_graphs.parquet. No GPU models are loaded here — this annotator is just
+    API calls, so you can use the normal concurrency setting.
+    """
+
+    CAPTION_TYPES = ("scene_type_a", "scene_type_b", "scene_type_c")
+
+    def __init__(self, backend: VLMBackend, verify: bool = True) -> None:
+        self._backend = backend
+        self._verify = verify
+        self._pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="scene_vlm")
+
+    def annotate(self, image_bytes: bytes, original_caption: str, scene_graph: str) -> dict:
+        """Return dict with keys scene_type_a, scene_type_b, scene_type_c."""
+        results = self._run_parallel({
+            "scene_type_a": prompts.SCENE_TYPE_A.format(
+                original_caption=original_caption, scene_graph=scene_graph
+            ),
+            "scene_type_b": prompts.SCENE_TYPE_B.format(
+                original_caption=original_caption, scene_graph=scene_graph
+            ),
+            "scene_type_c": prompts.SCENE_TYPE_C.format(
+                original_caption=original_caption, scene_graph=scene_graph
+            ),
+        }, image_bytes)
+
+        if self._verify:
+            results = self._run_verification(image_bytes, results)
+
+        return results
+
+    def _run_parallel(self, prompt_map: dict[str, str], image_bytes: bytes) -> dict:
+        futures = {
+            key: self._pool.submit(self._backend.call, image_bytes, prompt)
+            for key, prompt in prompt_map.items()
+        }
+        results = {}
+        for key, future in futures.items():
+            try:
+                results[key] = future.result()
+            except Exception as e:
+                logger.warning(f"{key} failed: {type(e).__name__}: {e}")
+                results[key] = None
+        return results
+
+    def _run_verification(self, image_bytes: bytes, results: dict) -> dict:
+        to_verify = {k: v for k, v in results.items() if v is not None}
+        futures = {
+            key: self._pool.submit(verify_caption, self._backend, image_bytes, caption)
+            for key, caption in to_verify.items()
+        }
+        for key, future in futures.items():
+            try:
+                if future.result():
+                    logger.debug(f"{key} discarded by verification")
+                    results[key] = None
+            except Exception as e:
+                logger.warning(f"Verification for {key} failed: {type(e).__name__}: {e}")
+        return results
+
+    def shutdown(self) -> None:
+        self._pool.shutdown(wait=False)
+
+
 # ── Worker process state ───────────────────────────────────────────────────────
 # Module-level globals, initialized once per worker process via the initializer.
 
-_worker_annotator: RoboticAnnotator | TwoCallAnnotator | None = None
+_worker_annotator: RoboticAnnotator | TwoCallAnnotator | CachedSceneAnnotator | None = None
 _worker_img_dir: Path | None = None
+_worker_pipeline: str = ""
 
 
 def _worker_init(cfg: Config, pipeline: str) -> None:
-    global _worker_annotator, _worker_img_dir
+    global _worker_annotator, _worker_img_dir, _worker_pipeline
     from datagen.vlm import get_backend
     backend = get_backend(cfg)
     _worker_img_dir = cfg.output_dir
+    _worker_pipeline = pipeline
     if pipeline == "two-call":
         _worker_annotator = TwoCallAnnotator(backend=backend, verify=cfg.verify)
+    elif pipeline == "scene-graph":
+        _worker_annotator = CachedSceneAnnotator(backend=backend, verify=cfg.verify)
     else:
         _worker_annotator = RoboticAnnotator(backend=backend, verify=cfg.verify)
 
 
 def _annotate_row(row: dict) -> dict:
     img_bytes = (_worker_img_dir / row["filename"]).read_bytes()
-    return {**row, **_worker_annotator.annotate(img_bytes, row["caption"])}
+    if _worker_pipeline == "scene-graph":
+        annotations = _worker_annotator.annotate(img_bytes, row["caption"], row["scene_graph"])
+    else:
+        annotations = _worker_annotator.annotate(img_bytes, row["caption"])
+    return {**row, **annotations}
 
 
 # ── Shared pipeline runner ─────────────────────────────────────────────────────
@@ -163,8 +248,9 @@ def _annotate_row(row: dict) -> dict:
 def run(cfg: Config, pipeline: str = "robotic") -> None:
     """Run the chosen annotation pipeline over metadata_path.
 
-    pipeline: "robotic"  — Type A / B / C (6 VLM calls with verify)
-              "two-call" — spatial_caption (2 VLM calls with verify)
+    pipeline: "robotic"     — Type A / B / C (6 VLM calls with verify)
+              "two-call"    — spatial_caption (2 VLM calls with verify)
+              "scene-graph" — SceneExtractor + scene Type A / B / C (3-6 VLM calls)
     """
     if not cfg.metadata_path.exists():
         raise FileNotFoundError(
@@ -178,6 +264,24 @@ def run(cfg: Config, pipeline: str = "robotic") -> None:
 
     df = pd.read_parquet(cfg.metadata_path)
     logger.info(f"Dataset: {len(df)} rows")
+
+    if pipeline == "scene-graph":
+        if not cfg.scene_graph_path.exists():
+            raise FileNotFoundError(
+                f"Scene graphs not found at {cfg.scene_graph_path}. "
+                "Run the extraction stage first:\n"
+                "  uv run python scripts/extract_scene_graphs.py "
+                "--config configs/scene_graph.toml"
+            )
+        sg_df = pd.read_parquet(cfg.scene_graph_path, columns=["filename", "scene_graph"])
+        before = len(df)
+        df = df.merge(sg_df, on="filename", how="inner")
+        if len(df) < before:
+            logger.warning(
+                f"{before - len(df)} rows dropped — no scene graph found for them. "
+                "Re-run extract_scene_graphs.py to fill gaps."
+            )
+        logger.info(f"Joined with scene graphs: {len(df)} rows ready")
 
     records = []
     error_counts: dict[str, int] = defaultdict(int)
@@ -201,10 +305,12 @@ def run(cfg: Config, pipeline: str = "robotic") -> None:
     cfg.annotated_path.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_parquet(cfg.annotated_path, index=False)
 
-    caption_types = (
-        TwoCallAnnotator.CAPTION_TYPES if pipeline == "two-call"
-        else RoboticAnnotator.CAPTION_TYPES
-    )
+    if pipeline == "two-call":
+        caption_types = TwoCallAnnotator.CAPTION_TYPES
+    elif pipeline == "scene-graph":
+        caption_types = CachedSceneAnnotator.CAPTION_TYPES
+    else:
+        caption_types = RoboticAnnotator.CAPTION_TYPES
     logger.info(f"Done: {len(records)}/{len(df)} succeeded → {cfg.annotated_path}")
     for col in caption_types:
         if col in result_df.columns:

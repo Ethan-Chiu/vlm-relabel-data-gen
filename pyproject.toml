@@ -16,6 +16,25 @@ dependencies = [
     "requests>=2.32.5",
 ]
 
+[project.optional-dependencies]
+# GPU inference for local models (vLLM server)
+gpu = ["vllm>=0.4.0"]
+
+# Scene-graph pipeline: RAM++ + GroundingDINO + SAM + Depth Anything V2
+# Install with: uv sync --extra scene
+# Also requires:
+#   pip install git+https://github.com/IDEA-Research/GroundingDINO.git
+#   pip install git+https://github.com/xinyu1205/recognize-anything.git
+#   pip install git+https://github.com/facebookresearch/segment-anything.git
+scene = [
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    "transformers>=4.40.0",
+    "huggingface-hub>=0.23.0",
+    "numpy>=1.26.0",
+    "supervision>=0.19.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

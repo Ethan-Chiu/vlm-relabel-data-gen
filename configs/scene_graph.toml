@@ -1,0 +1,31 @@
+# Scene-graph pipeline config
+# Run: uv run python scripts/annotate.py --config configs/scene_graph.toml --pipeline scene-graph
+#
+# Prerequisites:
+#   1. Download weights:  uv run python scripts/setup_models.py
+#   2. Install scene deps: uv sync --extra scene
+#   3. Ensure a VLM backend is configured (openai/gemini/vllm)
+
+# VLM backend for the caption generation calls (after scene extraction)
+vlm_backend = "openai"
+vlm_model = "gpt-4o-mini"
+
+# One worker per GPU to avoid OOM (SAM vit_h alone needs ~7 GB VRAM)
+concurrency = 1
+num_gpus_per_worker = 1
+
+verify = true
+
+# Scene model weights (relative to project root, or absolute paths)
+scene_ram_weights = "models/ram_plus_swin_large_14m.pth"
+scene_gdino_config = "models/GroundingDINO_SwinT_OGC.cfg.py"
+scene_gdino_weights = "models/groundingdino_swint_ogc.pth"
+scene_sam_weights = "models/sam_vit_h_4b8939.pth"
+scene_sam_type = "vit_h"
+scene_depth_model = "depth-anything/Depth-Anything-V2-Large-hf"
+
+# Detection thresholds
+scene_box_threshold = 0.30
+scene_text_threshold = 0.25
+scene_ram_image_size = 384
+scene_device = "cuda"

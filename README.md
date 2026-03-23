@@ -17,21 +17,33 @@ data-gen/
 │   ├── config.py                # Pydantic-settings Config (TOML + env vars)
 │   ├── download.py              # Download images → data/raw/, write metadata.parquet
 │   ├── storage.py               # Parquet read/write helpers
-│   ├── prompts.py               # Prompt templates (TYPE_A, TYPE_B, TYPE_C, VERIFY)
-│   ├── annotator.py             # RoboticAnnotator — parallel A/B/C calls + verification
+│   ├── prompts.py               # Prompt templates (TYPE_A/B/C, SCENE_TYPE_A/B/C, VERIFY)
+│   ├── annotator.py             # RoboticAnnotator / TwoCallAnnotator / SceneGraphAnnotator
 │   ├── pipeline.py              # Simple relabeling pipeline (ProcessPoolExecutor / Ray)
-│   └── vlm/
-│       ├── base.py              # VLMBackend ABC — one method: call(image_bytes, prompt)
-│       ├── openai_backend.py    # OpenAI API (GPT-4o, GPT-4o-mini, …)
-│       ├── gemini.py            # Google Gemini API (gemini-2.0-flash, …)
-│       ├── vllm.py              # vLLM server — OpenAI-compatible, any hosted model
-│       └── qwen_local.py        # Qwen3-VL-8B via transformers (local GPU)
+│   ├── vlm/
+│   │   ├── base.py              # VLMBackend ABC — one method: call(image_bytes, prompt)
+│   │   ├── openai_backend.py    # OpenAI API (GPT-4o, GPT-4o-mini, …)
+│   │   ├── gemini.py            # Google Gemini API (gemini-2.0-flash, …)
+│   │   ├── vllm.py              # vLLM server — OpenAI-compatible, any hosted model
+│   │   └── qwen_local.py        # Qwen3-VL-8B via transformers (local GPU)
+│   └── scene/
+│       ├── models.py            # Detection dataclass
+│       ├── grounded_sam.py      # RAM++ → GroundingDINO → SAM
+│       ├── depth.py             # Depth Anything V2 (HuggingFace transformers)
+│       ├── geometry.py          # Assign positions, ranks; build scene_graph text
+│       └── extractor.py         # SceneExtractor — orchestrates all CV models
 │
 ├── scripts/
 │   ├── download.py              # Entry point: download images + build metadata index
 │   ├── relabel.py               # Entry point: simple single-caption relabeling
-│   ├── annotate.py              # Entry point: multi-stage robotic annotation (A/B/C)
+│   ├── annotate.py              # Entry point: robotic / two-call / scene-graph annotation
+│   ├── setup_models.py          # Download scene-graph model weights
 │   └── show_parquet.py          # Inspect any Parquet file; export PDF report
+│
+├── configs/
+│   ├── qwen_local.toml          # Qwen3-VL-8B via local transformers
+│   ├── qwen_vllm.toml           # Qwen3-VL-8B via vLLM server
+│   └── scene_graph.toml         # Scene-graph pipeline (RAM++ + GroundingDINO + SAM)
 │
 └── data/                        # Generated data (gitignored)
     ├── raw/                     # Downloaded images (000000.jpg, 000001.jpg, …)
@@ -49,11 +61,20 @@ scripts/download.py
 
 scripts/relabel.py               (simple, single caption per image)
   └── reads  data/metadata.parquet
-  └── writes data/relabeled.parquet  [+ new_caption]
+  └── writes data/relabeled.parquet      [+ new_caption]
 
 scripts/annotate.py              (multi-stage robotic annotation)
   └── reads  data/metadata.parquet
-  └── writes data/annotated.parquet  [+ type_a, type_b, type_c]
+  └── writes data/annotated.parquet      [+ type_a, type_b, type_c]
+
+scripts/extract_scene_graphs.py  (scene graph pre-stage — GPU required)
+  └── reads  data/metadata.parquet
+  └── writes data/scene_graphs.parquet   [+ scene_graph, scene_detections]
+
+scripts/annotate.py --pipeline scene-graph
+  └── reads  data/metadata.parquet
+  └── reads  data/scene_graphs.parquet   (must run extract_scene_graphs.py first)
+  └── writes data/annotated.parquet      [+ scene_type_a, scene_type_b, scene_type_c]
 ```
 
 ## Annotation Pipeline (annotate.py)
@@ -69,6 +90,50 @@ image + original_caption
     │
     └─ [optional, parallel] Verification — discard any caption with spatial errors
 ```
+
+## Scene-Graph Pipeline (annotate.py --pipeline scene-graph)
+
+Uses computer vision models to extract a structured scene graph before calling the VLM.
+Each image gets grounded object detections, segmentation masks, and metric depth estimates,
+which are formatted into a compact text scene graph and passed as additional context to the VLM.
+
+```
+image + original_caption
+    │
+    ├─ RAM++            → open-vocabulary tags
+    ├─ GroundingDINO    → bounding boxes per tag
+    ├─ SAM              → segmentation masks per box
+    └─ Depth Anything V2→ per-object depth value (median within mask)
+    │
+    └─ scene_graph (text: label, position, depth_rank, area_rank, free_space)
+        │
+        ├─ [parallel] VLM + scene_graph → scene Type A  (spatially grounded layout)
+        ├─ [parallel] VLM + scene_graph → scene Type B  (grounded referring expressions)
+        └─ [parallel] VLM + scene_graph → scene Type C  (action-conditioned caption)
+        │
+        └─ [optional, parallel] Verification
+```
+
+**Setup:**
+```bash
+# 1. Install scene dependencies (torch, transformers, etc.)
+uv sync --extra scene
+
+# 2. Install packages not on PyPI (do this inside the venv)
+source .venv/bin/activate
+pip install git+https://github.com/IDEA-Research/GroundingDINO.git
+pip install git+https://github.com/xinyu1205/recognize-anything.git
+pip install git+https://github.com/facebookresearch/segment-anything.git
+
+# 3. Download model weights (~10 GB total)
+uv run python scripts/setup_models.py
+
+# 4. Run
+uv run python scripts/annotate.py --config configs/scene_graph.toml --pipeline scene-graph
+```
+
+**Hardware:** Requires a GPU with ≥12 GB VRAM (SAM vit_h: ~7 GB, RAM++: ~2 GB, Depth Large: ~1.5 GB).
+Set `scene_device = "cpu"` for CPU inference (very slow, useful for testing).
 
 ## VLM Backends
 
@@ -99,6 +164,15 @@ Config is loaded in priority order (highest first):
 | `metadata_path` | `data/metadata.parquet` | Input index for relabel/annotate |
 | `relabeled_path` | `data/relabeled.parquet` | Output of relabel pipeline |
 | `annotated_path` | `data/annotated.parquet` | Output of annotate pipeline |
+| `scene_ram_weights` | `models/ram_plus_swin_large_14m.pth` | RAM++ weights path |
+| `scene_gdino_config` | `models/GroundingDINO_SwinT_OGC.cfg.py` | GroundingDINO config |
+| `scene_gdino_weights` | `models/groundingdino_swint_ogc.pth` | GroundingDINO weights |
+| `scene_sam_weights` | `models/sam_vit_h_4b8939.pth` | SAM weights |
+| `scene_sam_type` | `vit_h` | SAM variant (vit_h/vit_l/vit_b) |
+| `scene_depth_model` | `depth-anything/Depth-Anything-V2-Large-hf` | Depth model (HF ID or path) |
+| `scene_box_threshold` | `0.30` | GroundingDINO box score cutoff |
+| `scene_text_threshold` | `0.25` | GroundingDINO text score cutoff |
+| `scene_device` | `cuda` | Device for scene CV models |
 | `vlm_backend` | `openai` | Backend to use |
 | `vlm_model` | `gpt-4o-mini` | Model name passed to backend |
 | `vlm_base_url` | `http://localhost:8000/v1` | vLLM server URL |
@@ -134,6 +208,17 @@ uv run python scripts/show_parquet.py --head 20                            # fir
 uv run python scripts/show_parquet.py --info                               # schema + row count
 uv run python scripts/show_parquet.py --pdf report.pdf                     # PDF with images + captions
 uv run python scripts/show_parquet.py data/annotated.parquet --pdf report.pdf
+
+# Scene-graph pipeline (two steps)
+uv sync --extra scene
+uv run python scripts/setup_models.py          # download ~10 GB of weights once
+
+# Step 1: extract scene graphs (GPU, saves intermediate parquet)
+uv run python scripts/extract_scene_graphs.py --config configs/scene_graph.toml
+uv run python scripts/show_parquet.py data/scene_graphs.parquet --info   # inspect
+
+# Step 2: VLM annotation using cached scene graphs (API, no GPU needed)
+uv run python scripts/annotate.py --pipeline scene-graph
 
 # Use vLLM server (start server first)
 vllm serve Qwen/Qwen3-VL-8B-Instruct --port 8000 --max-model-len 8192 --trust-remote-code
