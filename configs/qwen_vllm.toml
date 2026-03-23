@@ -8,7 +8,6 @@
 
 output_dir = "data/raw"
 metadata_path = "data/metadata.parquet"
-relabeled_path = "data/relabeled.parquet"
 
 vlm_backend = "vllm"
 vlm_model = "Qwen/Qwen3-VL-8B-Instruct"

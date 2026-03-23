@@ -251,12 +251,18 @@ def _worker_init(cfg: Config, pipeline: str) -> None:
 
 
 def _annotate_row(row: dict) -> dict:
-    img_bytes = (_worker_img_dir / row["filename"]).read_bytes()
-    if _worker_pipeline == "scene-graph":
-        annotations = _worker_annotator.annotate(img_bytes, row["caption"], row["scene_graph"])
-    else:
-        annotations = _worker_annotator.annotate(img_bytes, row["caption"])
-    return {**row, **annotations}
+    try:
+        img_bytes = (_worker_img_dir / row["filename"]).read_bytes()
+        if _worker_pipeline == "scene-graph":
+            annotations = _worker_annotator.annotate(img_bytes, row["caption"], row["scene_graph"])
+        else:
+            annotations = _worker_annotator.annotate(img_bytes, row["caption"])
+        return {**row, **annotations}
+    except Exception as e:
+        # Re-raise as RuntimeError to guarantee picklability across process boundaries.
+        # Some SDK exceptions (e.g. openai.APIStatusError) cannot be unpickled in the
+        # parent process, which crashes the entire pool rather than recording a row error.
+        raise RuntimeError(f"{type(e).__name__}: {e}") from None
 
 
 # ── Shared pipeline runner ─────────────────────────────────────────────────────

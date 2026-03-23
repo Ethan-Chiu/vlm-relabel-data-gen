@@ -2,7 +2,7 @@
 """Inspect a Parquet file.
 
 Usage:
-    uv run python scripts/show_parquet.py                                         # print table (default: data/relabeled.parquet)
+    uv run python scripts/show_parquet.py                                         # print table (default: data/annotated.parquet)
     uv run python scripts/show_parquet.py data/metadata.parquet                   # different file
     uv run python scripts/show_parquet.py --cols filename new_caption             # specific columns
     uv run python scripts/show_parquet.py --head 20                               # first 20 rows
@@ -99,7 +99,7 @@ def _build_pdf(df: pd.DataFrame, image_dir: Path, out_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inspect a Parquet file")
-    parser.add_argument("path", nargs="?", default="data/relabeled.parquet", help="Path to Parquet file")
+    parser.add_argument("path", nargs="?", default="data/annotated.parquet", help="Path to Parquet file")
     parser.add_argument("--cols", nargs="+", help="Only show these columns")
     parser.add_argument("--head", type=int, help="Show only first N rows")
     parser.add_argument("--info", action="store_true", help="Show schema and memory usage instead of rows")
