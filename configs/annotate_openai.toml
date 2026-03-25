@@ -1,0 +1,7 @@
+metadata_path = "/data/user_data/ethanchi/laion/metadata.parquet"
+annotated_path = "data/annotated_openai.parquet"
+
+vlm_backend = "openai"
+vlm_model = "gpt-4o"
+concurrency = 16
+verify = true

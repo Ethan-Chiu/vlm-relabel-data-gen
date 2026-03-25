@@ -102,6 +102,10 @@ def run(cfg: Config) -> None:
     df = pd.read_parquet(cfg.metadata_path)
     logger.info(f"Dataset: {len(df)} rows")
 
+    if cfg.annotate_limit is not None:
+        df = df.head(cfg.annotate_limit)
+        logger.info(f"Limiting to first {cfg.annotate_limit} rows")
+
     # Skip rows already extracted if output exists
     out_path = cfg.scene_graph_path
     if out_path.exists():

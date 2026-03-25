@@ -12,6 +12,7 @@ Supports resuming: already-extracted rows are skipped automatically.
 Usage:
     uv run python scripts/extract_scene_graphs.py
     uv run python scripts/extract_scene_graphs.py --config configs/scene_graph.toml
+    uv run python scripts/extract_scene_graphs.py --limit 100       # first 100 rows only
     uv run python scripts/extract_scene_graphs.py --concurrency 2   # 2 GPUs
 """
 
@@ -31,10 +32,19 @@ if __name__ == "__main__":
         "--concurrency", type=int, default=None,
         help="Number of GPU workers (overrides config; default: use config value)",
     )
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="Process only the first N rows of metadata (already-extracted rows are still skipped)",
+    )
     args = parser.parse_args()
 
     cfg = datagen_config.load(args.config)
+    overrides = {}
     if args.concurrency is not None:
-        cfg = cfg.model_copy(update={"concurrency": args.concurrency})
+        overrides["concurrency"] = args.concurrency
+    if args.limit is not None:
+        overrides["annotate_limit"] = args.limit
+    if overrides:
+        cfg = cfg.model_copy(update=overrides)
 
     run(cfg)

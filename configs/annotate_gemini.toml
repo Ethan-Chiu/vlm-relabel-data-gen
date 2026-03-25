@@ -1,0 +1,7 @@
+metadata_path = "/data/user_data/ethanchi/laion/metadata.parquet"
+annotated_path = "data/annotated_gemini.parquet"
+
+vlm_backend = "gemini"
+vlm_model = "gemini-robotics-er-1.5-preview"
+concurrency = 16
+verify = true
