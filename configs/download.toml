@@ -1,0 +1,5 @@
+annotations_path = "/data/user_data/ethanchi/laion_synthetic_filtered_large.json"
+output_dir = "/data/user_data/ethanchi/laion/raw"
+timeout = 10
+download_limit = 10000
+metadata_path = "/data/user_data/ethanchi/laion/metadata.parquet"

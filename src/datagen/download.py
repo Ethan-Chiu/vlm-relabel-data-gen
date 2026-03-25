@@ -12,7 +12,7 @@ from loguru import logger
 from PIL import Image, ImageFile, UnidentifiedImageError
 
 from datagen.config import Config
-from datagen.storage import write_metadata
+from datagen.storage import read_metadata, write_metadata
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 Image.MAX_IMAGE_PIXELS = None
@@ -33,16 +33,29 @@ def run(anns: list[Annotation], cfg: Config) -> None:
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     cfg.metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
-    stats = {"total": len(anns), "success": 0, "failed": 0}
+    # Resume support: skip URLs already present in the metadata index.
+    already_done: set[str] = set()
+    if cfg.metadata_path.exists():
+        existing = read_metadata(cfg.metadata_path)
+        already_done = set(existing["source_url"].tolist())
+        logger.info(f"Resuming — {len(already_done)} already downloaded, skipping those")
+
+    pending_count = sum(1 for a in anns if a["url"] not in already_done)
+    stats = {"total": pending_count, "success": 0, "failed": 0, "skipped": len(already_done)}
     error_counts: dict[str, int] = defaultdict(int)
     records = []
 
     for i, ann in enumerate(anns):
         url = ann["url"]
+        if url in already_done:
+            continue
         try:
             image = download_image(url, cfg.timeout)
 
-            suffix = Path(url.split("?")[0]).suffix or ".jpg"
+            _KNOWN = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
+            suffix = Path(url.split("?")[0]).suffix.lower()
+            if suffix not in _KNOWN:
+                suffix = ".jpg"
             filename = f"{i:06d}{suffix}"
             image.save(cfg.output_dir / filename)
 
@@ -74,7 +87,7 @@ def run(anns: list[Annotation], cfg: Config) -> None:
 
     logger.info(
         f"Done: {stats['success']}/{stats['total']} succeeded, "
-        f"{stats['failed']} failed — index → {cfg.metadata_path}"
+        f"{stats['failed']} failed, {stats['skipped']} skipped — index → {cfg.metadata_path}"
     )
     if error_counts:
         logger.warning(

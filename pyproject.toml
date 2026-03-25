@@ -7,6 +7,7 @@ dependencies = [
     "fairscale>=0.4.13",
     "fpdf2>=2.8.7",
     "google-genai>=1.68.0",
+    "ijson>=3.5.0",
     "loguru>=0.7.3",
     "openai>=2.29.0",
     "pandas>=3.0.1",
