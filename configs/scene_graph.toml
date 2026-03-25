@@ -6,6 +6,8 @@
 #   2. Install scene deps: uv sync --extra scene
 #   3. Ensure a VLM backend is configured (openai/gemini/vllm)
 
+metadata_path = "/data/user_data/ethanchi/laion/metadata.parquet"
+
 # VLM backend for the caption generation calls (after scene extraction)
 vlm_backend = "openai"
 vlm_model = "gpt-4o-mini"

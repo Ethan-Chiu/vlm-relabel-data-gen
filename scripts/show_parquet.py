@@ -47,11 +47,25 @@ def _build_pdf(df: pd.DataFrame, image_dir: Path, out_path: Path) -> None:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=MARGIN)
     pdf.set_margins(MARGIN, MARGIN, MARGIN)
-    _fonts = Path("/System/Library/Fonts/Supplemental")
-    pdf.add_font("Arial", style="",   fname=str(_fonts / "Arial.ttf"))
-    pdf.add_font("Arial", style="B",  fname=str(_fonts / "Arial Bold.ttf"))
-    pdf.add_font("Arial", style="I",  fname=str(_fonts / "Arial Italic.ttf"))
-    pdf.add_font("Arial", style="BI", fname=str(_fonts / "Arial Bold Italic.ttf"))
+    import sys as _sys
+    if _sys.platform == "darwin":
+        _fonts = Path("/System/Library/Fonts/Supplemental")
+        _font_map = {
+            "":   _fonts / "Arial.ttf",
+            "B":  _fonts / "Arial Bold.ttf",
+            "I":  _fonts / "Arial Italic.ttf",
+            "BI": _fonts / "Arial Bold Italic.ttf",
+        }
+    else:
+        _dv = Path("/usr/share/fonts/dejavu-sans-fonts")
+        _font_map = {
+            "":   _dv / "DejaVuSans.ttf",
+            "B":  _dv / "DejaVuSans-Bold.ttf",
+            "I":  _dv / "DejaVuSans-Oblique.ttf",
+            "BI": _dv / "DejaVuSans-BoldOblique.ttf",
+        }
+    for style, path in _font_map.items():
+        pdf.add_font("Arial", style=style, fname=str(path))
 
     missing = 0
     for _, row in df.iterrows():
@@ -104,7 +118,7 @@ def main() -> None:
     parser.add_argument("--head", type=int, help="Show only first N rows")
     parser.add_argument("--info", action="store_true", help="Show schema and memory usage instead of rows")
     parser.add_argument("--pdf", metavar="OUTPUT", help="Generate a PDF report with images and captions")
-    parser.add_argument("--image-dir", default="data/raw", help="Directory containing images (default: data/raw)")
+    parser.add_argument("--image-dir", default="/data/user_data/ethanchi/laion/raw", help="Directory containing images (default: /data/user_data/ethanchi/laion/raw)")
     args = parser.parse_args()
 
     path = Path(args.path)

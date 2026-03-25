@@ -36,7 +36,7 @@ class Config(BaseSettings):
 
     # --- Download ---
     annotations_path: Path = Path("data/annotations.json")
-    output_dir: Path = Path("data/raw")
+    output_dir: Path = Path("/data/user_data/ethanchi/laion/raw")
     timeout: int = 10
     download_limit: int | None = None  # max annotations to download; None = all
 
