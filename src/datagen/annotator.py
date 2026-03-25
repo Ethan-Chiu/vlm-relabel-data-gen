@@ -306,6 +306,26 @@ def run(cfg: Config, pipeline: str = "robotic") -> None:
             )
         logger.info(f"Joined with scene graphs: {len(df)} rows ready")
 
+    if cfg.annotate_limit is not None:
+        df = df.head(cfg.annotate_limit)
+        logger.info(f"Limiting to first {cfg.annotate_limit} rows")
+
+    # Load existing output to support skip/overwrite logic
+    existing_df: pd.DataFrame | None = None
+    if cfg.annotated_path.exists():
+        existing_df = pd.read_parquet(cfg.annotated_path)
+        existing_filenames = set(existing_df["filename"])
+        if not cfg.overwrite:
+            before = len(df)
+            df = df[~df["filename"].isin(existing_filenames)]
+            skipped = before - len(df)
+            if skipped:
+                logger.info(f"Skipping {skipped} already-annotated rows (overwrite=False)")
+
+    if df.empty:
+        logger.info("Nothing to process.")
+        return
+
     records = []
     error_counts: dict[str, int] = defaultdict(int)
 
@@ -324,7 +344,18 @@ def run(cfg: Config, pipeline: str = "robotic") -> None:
             except Exception as e:
                 error_counts[type(e).__name__] += 1
 
-    result_df = pd.DataFrame(records)
+    new_df = pd.DataFrame(records)
+
+    # Merge with existing output
+    if existing_df is not None:
+        if cfg.overwrite:
+            # Drop stale records for rows we just re-processed
+            reprocessed = {r["filename"] for r in records}
+            existing_df = existing_df[~existing_df["filename"].isin(reprocessed)]
+        result_df = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        result_df = new_df
+
     cfg.annotated_path.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_parquet(cfg.annotated_path, index=False)
 
@@ -338,9 +369,9 @@ def run(cfg: Config, pipeline: str = "robotic") -> None:
         caption_types = RoboticAnnotator.CAPTION_TYPES
     logger.info(f"Done: {len(records)}/{len(df)} succeeded → {cfg.annotated_path}")
     for col in caption_types:
-        if col in result_df.columns:
-            kept = result_df[col].notna().sum()
-            logger.info(f"  {col}: {kept}/{len(result_df)} kept after verification")
+        if col in new_df.columns:
+            kept = new_df[col].notna().sum()
+            logger.info(f"  {col}: {kept}/{len(new_df)} kept after verification")
     if error_counts:
         logger.warning(
             "Row errors: " + ", ".join(f"{k}: {v}" for k, v in error_counts.items())

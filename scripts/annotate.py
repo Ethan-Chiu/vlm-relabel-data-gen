@@ -41,10 +41,25 @@ if __name__ == "__main__":
         help="Pipeline to run (default: robotic)",
     )
     parser.add_argument("--no-verify", action="store_true", help="Skip verification step")
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="Max number of rows to process in this run (after skipping already-done rows)",
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="Re-process rows already present in annotated.parquet (default: skip them)",
+    )
     args = parser.parse_args()
 
     cfg = datagen_config.load(args.config)
+    overrides = {}
     if args.no_verify:
-        cfg = cfg.model_copy(update={"verify": False})
+        overrides["verify"] = False
+    if args.limit is not None:
+        overrides["annotate_limit"] = args.limit
+    if args.overwrite:
+        overrides["overwrite"] = True
+    if overrides:
+        cfg = cfg.model_copy(update=overrides)
 
     run(cfg, pipeline=args.pipeline)

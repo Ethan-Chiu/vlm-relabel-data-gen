@@ -45,6 +45,10 @@ class Config(BaseSettings):
     annotated_path: Path = Path("data/annotated.parquet")
     scene_graph_path: Path = Path("data/scene_graphs.parquet")  # intermediate scene extraction output
 
+    # --- Annotation run control ---
+    annotate_limit: int | None = None  # max rows to process per run; None = all
+    overwrite: bool = False            # re-process rows already present in annotated_path
+
     # --- VLM ---
     vlm_backend: str = "gemini"          # "gemini" | "vllm"
     vlm_model: str = "gemini-2.0-flash"
