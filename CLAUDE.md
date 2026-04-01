@@ -9,57 +9,81 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv sync                    # basic (API backends only)
 uv sync --extra scene      # include CV models (RAM++, GroundingDINO, SAM, Depth)
 
-# Run pipelines
+# Download
 uv run python scripts/download.py
-uv run python scripts/relabel.py
+
+# Annotation pipelines
 uv run python scripts/annotate.py                          # robotic (default)
+uv run python scripts/annotate.py --pipeline relabel
 uv run python scripts/annotate.py --pipeline two-call
 uv run python scripts/annotate.py --pipeline scene-graph
+uv run python scripts/annotate.py --pipeline semantic
 
-# Scene-graph prerequisites (GPU required)
+# Scene-graph pre-stage (GPU required)
 uv run python scripts/setup_models.py                      # download ~10GB weights
 uv run python scripts/extract_scene_graphs.py              # extract scene graphs
 
-# Scene-graph extra install (non-PyPI packages, required once after uv sync --extra scene)
-# See "Scene package install notes" section below for details.
+# Semantic pre-stage (API, requires scene graphs first)
+uv run python scripts/extract_semantic.py                  # extract semantic annotations
 
 # Inspect results
 uv run python scripts/show_parquet.py
 uv run python scripts/show_parquet.py --pdf report.pdf
+
+# Scene package extra install (non-PyPI packages, required once after uv sync --extra scene)
+# See "Scene package install notes" section below for details.
 ```
 
 No test framework or linter is configured.
 
 ## Architecture
 
-**Data flow:** `download.py` → `metadata.parquet` → `relabel.py` or `annotate.py` → output parquet
+**Data flow:** `download.py` → `metadata.parquet` → `annotate.py` → output parquet
+
+Scene/semantic pipelines add pre-stages:
+- `extract_scene_graphs.py` → `scene_graphs.parquet` (GPU)
+- `extract_semantic.py` → `semantic_annotations.parquet` (API, requires scene graphs)
 
 ### Configuration (`src/datagen/config.py`)
 Pydantic `BaseSettings` with priority: env vars (`DATAGEN_*` prefix) > `.env` > `config.toml` > defaults. Config is serialized to dict for `ProcessPoolExecutor` pickling — do not add non-serializable fields without updating `__reduce__`.
+
+Key fields: `annotate_limit` (first N rows, applied before skip filter), `overwrite` (re-annotate existing rows), `scene_graph_path`, `semantic_annotations_path`.
 
 ### VLM Backends (`src/datagen/vlm/`)
 Abstract `VLMBackend` with `call(image_bytes, prompt) -> str`. Concrete backends: `openai`, `gemini`, `vllm`, `qwen_local`. The factory `get_backend(config)` returns the appropriate backend by `config.vlm_backend`. Add new backends here and register in `__init__.py`.
 
 ### Pipelines
 
-**`pipeline.py`** — simple per-row relabeling with a single VLM call per image. Uses `ProcessPoolExecutor` for API backends or a Ray actor pool for local GPU models (`qwen_local`). Workers initialize the backend once in `_worker_init()`.
+**`annotator.py`** — pipeline runner; imports annotator classes from `datagen.annotators/`. Handles `ProcessPoolExecutor` workers, skip/overwrite/limit logic, and parquet I/O. Worker state lives in module globals (`_worker_annotator`, `_worker_img_dir`, `_worker_pipeline`).
 
-**`annotator.py`** — three annotation strategies:
-- `RoboticAnnotator`: 3 parallel VLM calls (Type A/B/C prompts) + parallel verification via inner `ThreadPoolExecutor`
-- `TwoCallAnnotator`: 1 generate call + sequential verification
-- `CachedSceneAnnotator`: like Robotic but reads pre-computed `scene_graph` text from parquet
+**`annotators/`** — one class per pipeline strategy:
+- `SimpleAnnotator` — single VLM call with `vlm_prompt` → `new_caption`
+- `TwoCallAnnotator` — generate + sequential verify → `spatial_caption`
+- `RoboticAnnotator(_ParallelVLMAnnotator)` — TYPE_A/B/C in parallel + `_verify_dict`
+- `CachedSceneAnnotator(_ParallelVLMAnnotator)` — SCENE_TYPE_A/B/C + `_verify_dict`
+- `SemanticAnnotator` — single caption from pre-extracted semantic annotations → `semantic_caption`
+- `_ParallelVLMAnnotator` base class — shared `_run_parallel`, `_verify_dict`, inner `ThreadPoolExecutor`
 
-**`scene_pipeline.py`** + `src/datagen/scene/` — GPU-intensive pre-processing stage. `SceneExtractor` chains RAM++ tagging → GroundingDINO detection → SAM segmentation → Depth Anything V2 → geometry assignment → text `scene_graph`. Outputs `scene_graphs.parquet` for use by `CachedSceneAnnotator`.
+**`scene_pipeline.py`** + `src/datagen/scene/` — GPU pre-processing. `SceneExtractor` chains RAM++ → GroundingDINO → SAM → Depth Anything V2 → text `scene_graph`. Outputs `scene_graphs.parquet`.
+
+**`semantic_pipeline.py`** + `src/datagen/semantic/` — API pre-processing. `SemanticExtractor` makes a single VLM call (SEMANTIC_EXTRACT prompt) and parses structured semantic properties. Outputs `semantic_annotations.parquet` with `semantic_props` (scene context + per-object appearance/state/affordances) and `semantic_rels` (typed relationship triples).
 
 ### Parallelism pattern
-- Outer: `ProcessPoolExecutor` (one process per CPU/API concurrency) or Ray actor pool (one actor per GPU)
-- Inner (annotator only): `ThreadPoolExecutor` for parallel A/B/C VLM calls within each worker process
+- Outer: `ProcessPoolExecutor` (one process per CPU/API concurrency slot)
+- Inner (robotic/scene annotators only): `ThreadPoolExecutor` for parallel A/B/C VLM calls within each worker process
+- Semantic annotator: no inner pool (single call per image)
 
 ### Prompts (`src/datagen/prompts.py`)
-`TYPE_A/B/C` for robotic annotation, `TWO_CALL_GENERATE` for two-call pipeline, `SCENE_TYPE_A/B/C` for scene-graph-conditioned annotation, `VERIFY` for spatial error checking.
+- `TYPE_A/B/C` — robotic annotation
+- `TWO_CALL_GENERATE` — two-call pipeline
+- `SCENE_TYPE_A/B/C` — scene-graph-conditioned annotation
+- `VERIFY` — spatial error checking for robotic/two-call/scene pipelines
+- `SEMANTIC_EXTRACT` — structured extraction: scene context, per-object appearance/state/affordances, typed relationships
+- `SEMANTIC_CAPTION` — single grounded paragraph; uses scene_graph + semantic annotations; outputs plain text (no JSON)
+- `SEMANTIC_VERIFY` — holistic verification for semantic captions
 
 ### Storage (`src/datagen/storage.py`)
-All pipelines read/write Parquet via `read_metadata()` / `write_metadata()`. Writes append by reading existing data and concatenating.
+All pipelines read/write Parquet via `read_metadata()` / `write_metadata()`. The output path is configurable via `annotated_path` in config or `DATAGEN_ANNOTATED_PATH` env var — use this to route different pipeline runs to separate parquets.
 
 ## Scene package install notes
 

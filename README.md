@@ -9,47 +9,64 @@ data-gen/
 ├── config.toml                  # Runtime config (edit this to change behaviour)
 ├── .env                         # Secrets — API keys (gitignored, copy from .env.example)
 ├── .env.example                 # Template for .env
-├── configs/                     # Alternative config files for different backends
+│
+├── configs/                     # Alternative config files for different backends/pipelines
+│   ├── download.toml            # Download config (source URL, output paths)
+│   ├── annotate_openai.toml     # GPT-4o annotation with verification
+│   ├── annotate_gemini.toml     # Gemini Robotics-ER annotation with verification
 │   ├── qwen_local.toml          # Qwen3-VL-8B via local transformers
-│   └── qwen_vllm.toml           # Qwen3-VL-8B via vLLM server
+│   ├── qwen_vllm.toml           # Qwen3-VL-8B via vLLM server
+│   └── scene_graph.toml         # Scene-graph pipeline (RAM++ + GroundingDINO + SAM)
 │
 ├── src/datagen/
 │   ├── config.py                # Pydantic-settings Config (TOML + env vars)
 │   ├── download.py              # Download images → data/raw/, write metadata.parquet
 │   ├── storage.py               # Parquet read/write helpers
-│   ├── prompts.py               # Prompt templates (TYPE_A/B/C, SCENE_TYPE_A/B/C, VERIFY)
-│   ├── annotator.py             # All pipelines: Simple / TwoCall / Robotic / CachedScene
-│   ├── scene_pipeline.py        # Scene graph extraction pipeline (GPU stage)
+│   ├── prompts.py               # All prompt templates
+│   ├── annotator.py             # Pipeline runner: worker init, skip/overwrite, parquet I/O
+│   ├── scene_pipeline.py        # Scene graph extraction pipeline (GPU pre-stage)
+│   ├── semantic_pipeline.py     # Semantic extraction pipeline (API pre-stage)
+│   │
+│   ├── annotators/              # One class per annotation strategy
+│   │   ├── base.py              # _ParallelVLMAnnotator base + verify_caption helper
+│   │   ├── simple.py            # SimpleAnnotator   — single VLM call → new_caption
+│   │   ├── two_call.py          # TwoCallAnnotator  — generate + verify → spatial_caption
+│   │   ├── robotic.py           # RoboticAnnotator  — Type A/B/C in parallel
+│   │   ├── scene.py             # CachedSceneAnnotator — scene-graph-conditioned A/B/C
+│   │   └── semantic.py          # SemanticAnnotator — grounded single caption
+│   │
 │   ├── vlm/
 │   │   ├── base.py              # VLMBackend ABC — one method: call(image_bytes, prompt)
 │   │   ├── openai_backend.py    # OpenAI API (GPT-4o, GPT-4o-mini, …)
 │   │   ├── gemini.py            # Google Gemini API (gemini-2.0-flash, …)
 │   │   ├── vllm.py              # vLLM server — OpenAI-compatible, any hosted model
 │   │   └── qwen_local.py        # Qwen3-VL-8B via transformers (local GPU)
-│   └── scene/
-│       ├── models.py            # Detection dataclass
-│       ├── grounded_sam.py      # RAM++ → GroundingDINO → SAM
-│       ├── depth.py             # Depth Anything V2 (HuggingFace transformers)
-│       ├── geometry.py          # Assign positions, ranks; build scene_graph text
-│       └── extractor.py         # SceneExtractor — orchestrates all CV models
+│   │
+│   ├── scene/                   # CV models for scene graph extraction
+│   │   ├── models.py            # Detection dataclass
+│   │   ├── grounded_sam.py      # RAM++ → GroundingDINO → SAM
+│   │   ├── depth.py             # Depth Anything V2 (HuggingFace transformers)
+│   │   ├── geometry.py          # Assign positions, ranks; build scene_graph text
+│   │   └── extractor.py         # SceneExtractor — orchestrates all CV models
+│   │
+│   └── semantic/                # Structured semantic extraction (pre-caption stage)
+│       ├── models.py            # SemanticAnnotation, ObjectProperties, Relationship dataclasses
+│       └── extractor.py         # SemanticExtractor — VLM call → parsed SemanticAnnotation
 │
 ├── scripts/
 │   ├── download.py              # Entry point: download images + build metadata index
 │   ├── annotate.py              # Entry point: all annotation pipelines
 │   ├── extract_scene_graphs.py  # Entry point: GPU scene graph extraction (pre-stage)
+│   ├── extract_semantic.py      # Entry point: API semantic extraction (pre-stage)
 │   ├── setup_models.py          # Download scene-graph model weights
 │   └── show_parquet.py          # Inspect any Parquet file; export PDF report
-│
-├── configs/
-│   ├── qwen_local.toml          # Qwen3-VL-8B via local transformers
-│   ├── qwen_vllm.toml           # Qwen3-VL-8B via vLLM server
-│   └── scene_graph.toml         # Scene-graph pipeline (RAM++ + GroundingDINO + SAM)
 │
 └── data/                        # Generated data (gitignored)
     ├── raw/                     # Downloaded images (000000.jpg, 000001.jpg, …)
     ├── metadata.parquet         # Image index: filename, caption, source_url, size
     ├── scene_graphs.parquet     # Scene extraction output: + scene_graph, scene_detections
-    └── annotated.parquet        # Annotation output (all pipelines write here)
+    ├── semantic_annotations.parquet  # Semantic extraction output: + semantic_props, semantic_rels
+    └── annotated.parquet        # Default annotation output (configurable per run)
 ```
 
 ## Data Flow
@@ -75,11 +92,21 @@ scripts/annotate.py --pipeline scene-graph
   └── reads  data/metadata.parquet
   └── reads  data/scene_graphs.parquet   (must run extract_scene_graphs.py first)
   └── writes data/annotated.parquet      [+ scene_type_a, scene_type_b, scene_type_c]
+
+scripts/extract_semantic.py      (semantic pre-stage — API, no GPU)
+  └── reads  data/scene_graphs.parquet   (must run extract_scene_graphs.py first)
+  └── writes data/semantic_annotations.parquet  [+ semantic_props, semantic_rels]
+
+scripts/annotate.py --pipeline semantic
+  └── reads  data/metadata.parquet
+  └── reads  data/scene_graphs.parquet
+  └── reads  data/semantic_annotations.parquet
+  └── writes data/annotated.parquet      [+ semantic_caption]
 ```
 
 ## Annotation Pipelines (annotate.py)
 
-All pipelines share the same script and write to `annotated.parquet`.
+All pipelines share the same script. The output parquet path is configurable via `annotated_path` in config or `DATAGEN_ANNOTATED_PATH` env var.
 
 | Pipeline | `--pipeline` | Output columns | VLM calls |
 |---|---|---|---|
@@ -87,6 +114,7 @@ All pipelines share the same script and write to `annotated.parquet`.
 | Two-call | `two-call` | `spatial_caption` | 1–2 |
 | Robotic | `robotic` (default) | `type_a`, `type_b`, `type_c` | 3–6 |
 | Scene-graph | `scene-graph` | `scene_type_a`, `scene_type_b`, `scene_type_c` | 3–6 |
+| Semantic | `semantic` | `semantic_caption` | 1 (+1 optional verify) |
 
 **Robotic pipeline** — three VLM calls in parallel, followed by optional verification:
 
@@ -172,12 +200,61 @@ uv run python scripts/annotate.py --pipeline scene-graph
 **Hardware:** Requires a GPU with ≥12 GB VRAM (SAM vit_h: ~7 GB, RAM++: ~2 GB, Depth Large: ~1.5 GB).
 Set `scene_device = "cpu"` for CPU inference (very slow, useful for testing).
 
+## Semantic Pipeline (annotate.py --pipeline semantic)
+
+Two-stage API pipeline that extracts structured semantic properties before generating a grounded caption.
+
+```
+Stage 0 (GPU, shared with scene-graph pipeline):
+  image → SceneExtractor → scene_graphs.parquet
+                           [scene_graph text, scene_detections JSON]
+
+Stage 1 (API, extract_semantic.py):
+  image + scene_graph + scene_detections
+    └─ VLM call (SEMANTIC_EXTRACT prompt)
+    └─ parsed into: scene_context, per-object appearance/state/affordances,
+                    typed inter-object relationships with visual evidence
+    └─ writes semantic_annotations.parquet
+       [semantic_props JSON, semantic_rels JSON]
+
+Stage 2 (API, annotate.py --pipeline semantic):
+  image + scene_graph + semantic_props + semantic_rels
+    └─ VLM call (SEMANTIC_CAPTION prompt)
+    └─ single grounded paragraph: spatial positions, object appearance,
+       visible relationships — no subjective language, no pipeline internals
+    └─ [optional] verification call (--verify)
+    └─ writes semantic_caption column
+```
+
+**Run:**
+```bash
+# Prerequisites: scene graphs must already be extracted
+uv run python scripts/extract_scene_graphs.py --config configs/scene_graph.toml
+
+# Stage 1: extract semantic properties
+uv run python scripts/extract_semantic.py
+uv run python scripts/extract_semantic.py --limit 100   # first 100 rows only
+
+# Stage 2: generate grounded captions
+uv run python scripts/annotate.py --pipeline semantic
+DATAGEN_ANNOTATED_PATH=data/annotated_semantic.parquet \
+  uv run python scripts/annotate.py --pipeline semantic --verify
+```
+
+**Output columns:**
+
+| Column | Source | Description |
+|---|---|---|
+| `semantic_props` | Stage 1 | JSON: `scene_context` + per-object `appearance`, `state`, `affordances` |
+| `semantic_rels` | Stage 1 | JSON: typed relationship triples with visual evidence |
+| `semantic_caption` | Stage 2 | Single grounded paragraph describing the scene |
+
 ## VLM Backends
 
 | Backend | Key | Best for |
 |---|---|---|
 | `openai` | `DATAGEN_OPENAI_API_KEY` | GPT-4o / GPT-4o-mini via API |
-| `gemini` | `DATAGEN_GEMINI_API_KEY` | Gemini 2.0 Flash via API |
+| `gemini` | `DATAGEN_GEMINI_API_KEY` | Gemini Robotics-ER 1.5 / Gemini 2.0 Flash via API |
 | `vllm` | — | Any model served by a vLLM server |
 | `qwen_local` | — | Qwen3-VL-8B direct GPU inference |
 
@@ -199,7 +276,11 @@ Config is loaded in priority order (highest first):
 | `output_dir` | `data/raw` | Where downloaded images are saved |
 | `timeout` | `10` | HTTP timeout for image downloads (seconds) |
 | `metadata_path` | `data/metadata.parquet` | Input index for annotation pipelines |
-| `annotated_path` | `data/annotated.parquet` | Output of all annotation pipelines |
+| `annotated_path` | `data/annotated.parquet` | Output of annotation pipelines |
+| `scene_graph_path` | `data/scene_graphs.parquet` | Scene graph intermediate output |
+| `semantic_annotations_path` | `data/semantic_annotations.parquet` | Semantic extraction intermediate output |
+| `annotate_limit` | `null` | Process only the first N rows (applied before skip filter) |
+| `overwrite` | `false` | Re-annotate rows that already exist in output |
 | `scene_ram_weights` | `models/ram_plus_swin_large_14m.pth` | RAM++ weights path |
 | `scene_gdino_config` | `models/GroundingDINO_SwinT_OGC.cfg.py` | GroundingDINO config |
 | `scene_gdino_weights` | `models/groundingdino_swint_ogc.pth` | GroundingDINO weights |
@@ -223,34 +304,45 @@ Config is loaded in priority order (highest first):
 # Setup
 cp .env.example .env              # then fill in your API key
 
-# Download images (config only matters for output_dir / timeout / metadata_path)
+# Download images
 uv run python scripts/download.py
+uv run python scripts/download.py --config configs/download.toml
 
-# Annotation (all pipelines write to annotated.parquet)
-uv run python scripts/annotate.py --pipeline relabel                       # single caption
+# Annotation (all pipelines)
 uv run python scripts/annotate.py                                          # robotic (Type A+B+C)
+uv run python scripts/annotate.py --pipeline relabel                       # single caption
 uv run python scripts/annotate.py --pipeline two-call
-uv run python scripts/annotate.py --no-verify       # skip verification step
-uv run python scripts/annotate.py --config configs/qwen_vllm.toml
+uv run python scripts/annotate.py --pipeline scene-graph
+uv run python scripts/annotate.py --pipeline semantic
+uv run python scripts/annotate.py --no-verify                              # skip verification
+uv run python scripts/annotate.py --limit 100                              # first 100 rows only
+uv run python scripts/annotate.py --overwrite                              # re-annotate existing rows
+uv run python scripts/annotate.py --config configs/annotate_openai.toml   # use GPT-4o
+uv run python scripts/annotate.py --config configs/annotate_gemini.toml   # use Gemini Robotics-ER
+
+# Route output to a separate file (useful when running multiple configs)
+DATAGEN_ANNOTATED_PATH=data/annotated_openai_robotic.parquet \
+  uv run python scripts/annotate.py --config configs/annotate_openai.toml
 
 # Inspect output
-uv run python scripts/show_parquet.py data/annotated.parquet               # print annotated.parquet
+uv run python scripts/show_parquet.py data/annotated.parquet               # print table
 uv run python scripts/show_parquet.py --cols filename type_a type_b type_c # specific columns
 uv run python scripts/show_parquet.py --head 20                            # first 20 rows
 uv run python scripts/show_parquet.py --info                               # schema + row count
 uv run python scripts/show_parquet.py --pdf report.pdf                     # PDF with images + captions
-uv run python scripts/show_parquet.py data/annotated.parquet --pdf report.pdf
+uv run python scripts/show_parquet.py data/annotated_semantic.parquet --pdf semantic.pdf
 
 # Scene-graph pipeline (two steps)
 uv sync --extra scene
 uv run python scripts/setup_models.py          # download ~10 GB of weights once
 
-# Step 1: extract scene graphs (GPU, saves intermediate parquet)
 uv run python scripts/extract_scene_graphs.py --config configs/scene_graph.toml
-uv run python scripts/show_parquet.py data/scene_graphs.parquet --info   # inspect
-
-# Step 2: VLM annotation using cached scene graphs (API, no GPU needed)
 uv run python scripts/annotate.py --pipeline scene-graph
+
+# Semantic pipeline (three steps)
+uv run python scripts/extract_scene_graphs.py --config configs/scene_graph.toml  # GPU stage
+uv run python scripts/extract_semantic.py                                          # API stage 1
+uv run python scripts/annotate.py --pipeline semantic                             # API stage 2
 
 # Use vLLM server (start server first)
 uvx vllm serve Qwen/Qwen3-VL-8B-Instruct --port 8000 --max-model-len 8192 --trust-remote-code
@@ -262,12 +354,12 @@ DATAGEN_VLM_MODEL=gpt-4o uv run python scripts/annotate.py
 DATAGEN_VERIFY=false uv run python scripts/annotate.py
 ```
 
-## Adding a Processing Stage
+## Adding a New Annotation Pipeline
 
-All per-row work happens in `_annotate_row` in `annotator.py`. To add a new pipeline, create an annotator class with an `annotate(image_bytes, original_caption) -> dict` method, register it in `_worker_init`, and add it to the `--pipeline` choices in `scripts/annotate.py`.
+Create an annotator class in `src/datagen/annotators/`, register it in `annotators/__init__.py`, add a branch in `annotator.py`'s `_worker_init` and `_annotate_row`, and add the `--pipeline` choice in `scripts/annotate.py`.
 
 ```python
-# annotator.py — example new annotator
+# src/datagen/annotators/my_annotator.py
 class MyAnnotator:
     CAPTION_TYPES = ("my_output",)
 
