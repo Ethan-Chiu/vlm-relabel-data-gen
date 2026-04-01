@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from loguru import logger
 
@@ -38,6 +39,16 @@ class SemanticAnnotator(_ParallelVLMAnnotator):
             logger.warning(f"Failed to parse semantic annotation JSON: {e}")
             return {"semantic_caption": None}
 
+        # Reorder objects to match scene_graph label order (nearest-first after
+        # build_scene_graph sorts by depth_rank; also works on old parquets).
+        ordered_labels = _label_order_from_scene_graph(scene_graph)
+        if ordered_labels:
+            rank = {lbl: i for i, lbl in enumerate(ordered_labels)}
+            props["objects"] = sorted(
+                props.get("objects", []),
+                key=lambda o: rank.get(o.get("label", "").strip().lower(), 9999),
+            )
+
         semantic_annotation = json.dumps({**props, **rels}, indent=2)
         prompt = prompts.SEMANTIC_CAPTION.format(
             scene_graph=scene_graph,
@@ -72,3 +83,19 @@ class SemanticAnnotator(_ParallelVLMAnnotator):
             image_bytes, prompts.SEMANTIC_VERIFY.format(caption=caption)
         )
         return answer.strip().upper().startswith("YES")
+
+
+def _label_order_from_scene_graph(scene_graph: str) -> list[str]:
+    """Return object labels in the order they appear in the scene_graph text.
+
+    After build_scene_graph() sorts by depth_rank, this gives nearest-first order.
+    Works correctly on both old (detection-ordered) and new (depth-ordered) scene_graphs.
+    """
+    labels: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r"^\d+\.\s+([^\[]+)", scene_graph, re.MULTILINE):
+        label = m.group(1).strip().lower()
+        if label and label not in seen:
+            labels.append(label)
+            seen.add(label)
+    return labels

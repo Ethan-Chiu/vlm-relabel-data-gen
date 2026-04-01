@@ -23,6 +23,7 @@ class SceneContext:
 class ObjectProperties:
     """Per-object semantic properties aligned to a scene-graph label."""
     label: str
+    position: str | None = None               # spatial position from scene graph, e.g. "right-near"
     appearance: str | None = None
     appearance_confidence: str = "medium"      # "high" | "medium"
     state: str | None = None
@@ -63,6 +64,7 @@ class SemanticAnnotation:
             "objects": [
                 {
                     "label": o.label,
+                    "position": o.position,
                     "appearance": o.appearance,
                     "appearance_confidence": o.appearance_confidence,
                     "state": o.state,
@@ -106,6 +108,7 @@ class SemanticAnnotation:
         objects = [
             ObjectProperties(
                 label=o["label"],
+                position=o.get("position") or None,
                 appearance=o.get("appearance"),
                 appearance_confidence=o.get("appearance_confidence", "medium"),
                 state=o.get("state"),

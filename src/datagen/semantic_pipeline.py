@@ -39,16 +39,21 @@ from datagen.config import Config
 # ── Worker process state ───────────────────────────────────────────────────────
 
 _worker_extractor = None
+_worker_verifier = None
 _worker_img_dir: Path | None = None
 
 
 def _worker_init(cfg: Config) -> None:
-    global _worker_extractor, _worker_img_dir
+    global _worker_extractor, _worker_verifier, _worker_img_dir
     from datagen.semantic.extractor import SemanticExtractor
     from datagen.vlm import get_backend
 
     _worker_img_dir = cfg.output_dir
-    _worker_extractor = SemanticExtractor(backend=get_backend(cfg))
+    backend = get_backend(cfg)
+    _worker_extractor = SemanticExtractor(backend=backend)
+    if cfg.verify:
+        from datagen.semantic.verifier import SemanticVerifier
+        _worker_verifier = SemanticVerifier(backend=backend)
 
 
 def _extract_row(row: dict) -> dict:
@@ -61,6 +66,14 @@ def _extract_row(row: dict) -> dict:
         )
     except Exception as e:
         raise RuntimeError(f"{type(e).__name__}: {e}") from None
+
+    if _worker_verifier is not None:
+        try:
+            annotation = _worker_verifier.verify_objects(
+                img_bytes, row["scene_detections"], annotation
+            )
+        except Exception as e:
+            logger.debug(f"Verifier error for {row['filename']}: {e}")
 
     return {
         "filename": row["filename"],

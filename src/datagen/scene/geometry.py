@@ -112,29 +112,150 @@ def assign_geometry(detections: list[Detection], image_shape: tuple[int, int]) -
         det.free_space = _estimate_free_space(det, detections, W, H)
 
 
+# ── IoU deduplication ─────────────────────────────────────────────────────────
+
+# Detections whose bounding boxes overlap above this threshold with a larger
+# detection are considered semantic near-duplicates (e.g. "hotel" vs "hotel
+# resort" vs "resort") and are suppressed from the scene graph.
+IOU_DEDUP_THRESHOLD = 0.5
+
+
+def _iou(a, b) -> float:
+    """Compute IoU between two [x1, y1, x2, y2] boxes."""
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter == 0:
+        return 0.0
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    return inter / (area_a + area_b - inter)
+
+
+def _containment(small, large) -> float:
+    """Fraction of `small` box's area that lies inside `large` box."""
+    ix1, iy1 = max(small[0], large[0]), max(small[1], large[1])
+    ix2, iy2 = min(small[2], large[2]), min(small[3], large[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    area_small = (small[2] - small[0]) * (small[3] - small[1])
+    return inter / area_small if area_small > 0 else 0.0
+
+
+# Suppress a detection if ≥80% of its area is inside a larger detection.
+# This catches "resort" whose bbox is almost entirely within "hotel resort".
+CONTAINMENT_THRESHOLD = 0.80
+
+
+def _share_label_word(a: str, b: str) -> bool:
+    """Return True if the two labels share at least one word (case-insensitive)."""
+    return bool(set(a.lower().split()) & set(b.lower().split()))
+
+
+def _nms_dicts(dets: list[dict]) -> list[dict]:
+    """Suppress near-duplicate detections caused by overlapping GroundingDINO labels
+    (e.g. "hotel" / "hotel resort" / "resort" all describing the same building).
+
+    Two suppression criteria:
+    - IoU > IOU_DEDUP_THRESHOLD: suppress regardless of label.
+      High IoU means the boxes are nearly the same region (same object).
+    - Containment > CONTAINMENT_THRESHOLD AND labels share a word: suppress.
+      Catches "resort" (small box) inside "hotel resort" (large box).
+      The shared-word guard prevents suppressing semantically different objects
+      that happen to be spatially contained (e.g. "person" inside "hotel resort").
+
+    Larger-area detections are processed first so the most encompassing label
+    (e.g. "hotel resort") survives over contained sub-labels ("hotel", "resort").
+    """
+    def _area(d: dict) -> float:
+        b = d.get("bbox") or []
+        return (b[2] - b[0]) * (b[3] - b[1]) if len(b) == 4 else 0.0
+
+    sorted_dets = sorted(dets, key=_area, reverse=True)
+    kept: list[dict] = []
+    for det in sorted_dets:
+        bbox = det.get("bbox") or []
+        if len(bbox) != 4:
+            kept.append(det)
+            continue
+        suppressed = False
+        for k in kept:
+            kb = k.get("bbox") or []
+            if len(kb) != 4:
+                continue
+            if _iou(bbox, kb) > IOU_DEDUP_THRESHOLD:
+                suppressed = True
+                break
+            if (_containment(bbox, kb) > CONTAINMENT_THRESHOLD and
+                    _share_label_word(det["label"], k["label"])):
+                suppressed = True
+                break
+        if not suppressed:
+            kept.append(det)
+    return kept
+
+
+# ── Text builder ──────────────────────────────────────────────────────────────
+
+def _build_scene_graph_text(active: list[dict]) -> str:
+    """Build scene_graph text from post-NMS detection dicts, sorted by depth_rank.
+
+    Each detection becomes its own numbered line — same-label objects (e.g.
+    multiple people) are listed individually so their spatial positions are
+    preserved for the VLM.
+
+    Dict keys: label, position, confidence, depth_value, depth_rank, area_rank,
+               free_space.
+    """
+    ordered = sorted(active, key=lambda d: d.get("depth_rank") or 9999)
+    lines = [f"SCENE GRAPH ({len(ordered)} objects detected):"]
+    for i, d in enumerate(ordered, start=1):
+        depth_val = d.get("depth_value")
+        depth_str = f"{depth_val:.3f}" if depth_val is not None else "n/a"
+        lines.append(
+            f"{i}. {d['label']} [{d['position']}] "
+            f"conf={d['confidence']:.2f} depth={depth_str} "
+            f"depth_rank={d['depth_rank']} area_rank={d['area_rank']}"
+        )
+        if d.get("free_space"):
+            lines.append(f"   {d['free_space']}")
+    return "\n".join(lines)
+
+
+def build_scene_graph_from_dicts(detections: list[dict]) -> str:
+    """Rebuild scene_graph text from scene_detections JSON dicts.
+
+    Applies IoU-based deduplication to remove overlapping near-duplicate labels
+    (e.g. hotel / hotel resort / resort → just hotel resort), then lists every
+    surviving detection individually sorted by depth_rank.
+
+    Used by rebuild_scene_graphs.py to update existing parquets without
+    re-running the full CV pipeline.
+    """
+    if not detections:
+        return "SCENE GRAPH: No objects detected."
+    return _build_scene_graph_text(_nms_dicts(detections))
+
+
 def build_scene_graph(detections: list[Detection]) -> str:
     """Serialize detections to a compact text block for VLM prompts.
 
-    Example output::
-
-        SCENE GRAPH (4 objects detected):
-        1. cup [left-near] conf=0.82 depth_rank=1 area_rank=3
-           Free space: Clear space left, above of the cup.
-        2. plate [center-mid] conf=0.91 depth_rank=2 area_rank=1
-           Free space: Clear space right, below of the plate.
-        ...
+    Applies the same IoU deduplication as build_scene_graph_from_dicts(), then
+    lists every surviving detection individually sorted by depth_rank.
     """
     if not detections:
         return "SCENE GRAPH: No objects detected."
 
-    lines = [f"SCENE GRAPH ({len(detections)} objects detected):"]
-    for i, det in enumerate(detections, start=1):
-        depth_str = f"{det.depth_value:.3f}" if det.depth_value is not None else "n/a"
-        lines.append(
-            f"{i}. {det.label} [{det.position}] "
-            f"conf={det.confidence:.2f} depth={depth_str} "
-            f"depth_rank={det.depth_rank} area_rank={det.area_rank}"
-        )
-        if det.free_space:
-            lines.append(f"   {det.free_space}")
-    return "\n".join(lines)
+    dicts = [
+        {
+            "label": d.label,
+            "bbox": list(d.bbox),
+            "confidence": d.confidence,
+            "depth_value": d.depth_value,
+            "position": d.position,
+            "depth_rank": d.depth_rank,
+            "area_rank": d.area_rank,
+            "free_space": d.free_space or "",
+        }
+        for d in detections
+    ]
+    return _build_scene_graph_text(_nms_dicts(dicts))

@@ -75,11 +75,12 @@ def _strip_fences(text: str) -> str:
 
 
 def _extract_known_labels(scene_graph: str) -> set[str]:
-    """Extract object labels from scene_graph text so we can validate references."""
+    """Extract object labels from scene_graph text for relationship validation."""
     labels: set[str] = set()
-    # Each detection line looks like: "1. cup [left-near] conf=..."
     for m in re.finditer(r"^\d+\.\s+([^\[]+)", scene_graph, re.MULTILINE):
-        labels.add(m.group(1).strip().lower())
+        label = m.group(1).strip().lower()
+        if label:
+            labels.add(label)
     return labels
 
 
@@ -123,12 +124,14 @@ def _parse_response(raw: str, scene_graph: str) -> SemanticAnnotation:
 
         app_conf = obj.get("appearance_confidence", "medium")
         state_conf = obj.get("state_confidence", "medium")
+        position = str(obj.get("position", "")).strip() or None
 
         raw_affordances = obj.get("affordances") or []
         affordances = [a for a in raw_affordances if a in _VALID_AFFORDANCES]
 
         objects.append(ObjectProperties(
             label=label,
+            position=position,
             appearance=obj.get("appearance") or None,
             appearance_confidence=app_conf if app_conf in _VALID_CONFIDENCE else "medium",
             state=obj.get("state") or None,

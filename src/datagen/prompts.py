@@ -168,7 +168,8 @@ Look at the image carefully and return a single JSON object with this exact stru
   }},
   "objects": [
     {{
-      "label": "<must exactly match a label from the scene graph above>",
+      "label": "<label exactly as it appears in the scene graph line>",
+      "position": "<position exactly as it appears in the scene graph line, e.g. right-near, center-mid>",
       "appearance": "<prominent visual traits visible in the image: color (e.g. bright red), \
 surface material (e.g. ceramic, stainless steel, wood), texture (e.g. matte, glossy, rough), \
 pattern (e.g. striped, floral), shape, or any other salient visible characteristic — \
@@ -201,7 +202,9 @@ Relationship predicate vocabulary by type:
   proximity_semantic:  belongs_near, stored_with
 
 Rules:
-- Include one entry in "objects" for every object in the scene graph.
+- Include ONE entry in "objects" per numbered line in the scene graph — \
+if the same label appears multiple times at different positions \
+(e.g. several people), create one entry per occurrence with its own position.
 - Omit any property or relationship where your confidence would be low — \
 do not include it at all rather than guessing.
 - Use the detection bounding boxes and depth values to reason about which \
@@ -264,4 +267,34 @@ about things that cannot be determined from a single static image \
 (dynamics, object weight, events before or after the moment shown).
 
 Caption: {caption}\
+"""
+
+SEMANTIC_VERIFY_OBJECT = """\
+You are verifying properties for one object detected in a scene image.
+
+The cropped image shows: {label}
+
+Currently extracted properties:
+  appearance: {appearance}
+  state: {state}
+
+Look at the crop and return a JSON object:
+
+{{
+  "appearance": "<corrected or confirmed description; \
+color, material, texture, shape; null if nothing distinctive is visible>",
+  "appearance_confidence": "<high | medium>",
+  "appearance_corrected": <true | false>,
+  "state": "<corrected or confirmed state; \
+e.g. empty, full, open, closed, on, off, upright, inverted; null if not applicable or unclear>",
+  "state_confidence": "<high | medium>",
+  "state_corrected": <true | false>
+}}
+
+Rules:
+- Judge only from what is directly visible in this crop.
+- If a property is already correct, return the same value with corrected=false.
+- If it is wrong or significantly incomplete, provide a better description with corrected=true.
+- Do NOT infer affordances, relationships, or scene context — focus only on appearance and state.
+- Output only valid JSON. No markdown fences, no extra text.\
 """
