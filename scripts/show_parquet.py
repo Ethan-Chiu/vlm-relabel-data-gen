@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -30,7 +31,8 @@ def _build_pdf(df: pd.DataFrame, image_dir: Path, out_path: Path) -> None:
     LABEL_COLOR = (80, 80, 80)
     CAPTION_COLOR = (30, 30, 30)
 
-    # All caption columns in display order — render whichever exist in the file
+    # All text columns in display order — render whichever exist in the file.
+    # semantic_captions is handled separately below (JSON array → per-focus sections).
     CAPTION_COLUMNS: list[tuple[str, str]] = [
         ("caption",          "Original caption"),
         ("new_caption",      "Generated caption"),
@@ -42,6 +44,9 @@ def _build_pdf(df: pd.DataFrame, image_dir: Path, out_path: Path) -> None:
         ("scene_type_a",     "Scene Type A — Grounded spatial description"),
         ("scene_type_b",     "Scene Type B — Grounded referring expressions"),
         ("scene_type_c",     "Scene Type C — Grounded action caption"),
+        ("semantic_props",   "Semantic properties"),
+        ("semantic_rels",    "Semantic relationships"),
+        ("semantic_caption", "Semantic caption"),
     ]
 
     pdf = FPDF()
@@ -90,18 +95,27 @@ def _build_pdf(df: pd.DataFrame, image_dir: Path, out_path: Path) -> None:
         pdf.cell(0, 5, row["filename"])
         pdf.ln(8)
 
-        # --- Caption sections (whichever columns are present) ---
+        # --- Caption / annotation sections ---
+        _JSON_COLS = {"semantic_props", "semantic_rels"}
+
         for col, label in CAPTION_COLUMNS:
             if col not in row or pd.isna(row[col]):
                 continue
+            value = str(row[col])
+            if col in _JSON_COLS:
+                try:
+                    value = json.dumps(json.loads(value), indent=2)
+                except (json.JSONDecodeError, TypeError):
+                    pass
             pdf.set_font("Arial", "BI", 8)
             pdf.set_text_color(*LABEL_COLOR)
             pdf.cell(0, 4, label)
             pdf.ln(5)
-            pdf.set_font("Arial", "", 10)
+            pdf.set_font("Arial", "", 9 if col in _JSON_COLS else 10)
             pdf.set_text_color(*CAPTION_COLOR)
-            pdf.multi_cell(IMG_MAX_W, 5, str(row[col]))
+            pdf.multi_cell(IMG_MAX_W, 5, value)
             pdf.ln(3)
+
 
     pdf.output(str(out_path))
 

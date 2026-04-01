@@ -139,3 +139,129 @@ Requirements:
 - Identify the clearest placement zone based on the free-space information
 - Be concise and action-relevant\
 """
+
+# ── Semantic enrichment prompts (semantic pipeline) ───────────────────────────
+# Stage 1: unified extraction of properties + relationships from image + scene graph.
+# Stage 2: caption generation from verified semantic fact sheet.
+# Stage 3 (optional): extended holistic verification.
+
+SEMANTIC_EXTRACT = """\
+You are extracting semantic properties and relationships from an image \
+to build VLA (Vision-Language-Action) training data.
+
+A computer vision system has detected the following objects:
+
+{scene_graph}
+
+Detection details (bounding boxes [x1,y1,x2,y2] as fractions of image dimensions; \
+depth: 0.0 = nearest, 1.0 = farthest):
+{scene_detections}
+
+Look at the image carefully and return a single JSON object with this exact structure:
+
+{{
+  "scene_context": {{
+    "environment": "<type of surface or room, e.g. kitchen counter, workshop bench, dining table>",
+    "apparent_activity": "<what is happening or has just happened — null if unclear>",
+    "temporal_phase": "<setup | in_progress | completed — null if unclear>",
+    "confidence": "<high | medium>"
+  }},
+  "objects": [
+    {{
+      "label": "<must exactly match a label from the scene graph above>",
+      "appearance": "<prominent visual traits visible in the image: color (e.g. bright red), \
+surface material (e.g. ceramic, stainless steel, wood), texture (e.g. matte, glossy, rough), \
+pattern (e.g. striped, floral), shape, or any other salient visible characteristic — \
+combine multiple traits if needed, e.g. 'white ceramic with glossy finish'; null if nothing distinctive>",
+      "appearance_confidence": "<high | medium>",
+      "state": "<e.g. empty, full, open, closed, on, off, upright, inverted — null if not applicable or unclear>",
+      "state_confidence": "<high | medium>",
+      "affordances": ["<from this list only: graspable, fillable, openable, stackable, pourable, cuttable, liftable>"]
+    }}
+  ],
+  "relationships": [
+    {{
+      "subject": "<label from scene graph>",
+      "predicate": "<predicate from the vocabulary below>",
+      "object": "<label from scene graph, OR a content noun such as soup or liquid>",
+      "type": "<relationship type from vocabulary below>",
+      "confidence": "<high | medium>",
+      "evidence": "<one sentence: the specific visual signal that supports this claim>"
+    }}
+  ]
+}}
+
+Relationship predicate vocabulary by type:
+  part_whole:          belongs_to, has_part, is_lid_of, is_handle_of
+  set_membership:      set_with, matches, pairs_with
+  containment:         contains, filled_with, holds
+  support:             rests_on, stacked_on, mounted_on
+  functional_pairing:  used_with, placed_for, positioned_beside
+  activity_driven:     being_cut_by, being_poured_into, being_stirred_by
+  proximity_semantic:  belongs_near, stored_with
+
+Rules:
+- Include one entry in "objects" for every object in the scene graph.
+- Omit any property or relationship where your confidence would be low — \
+do not include it at all rather than guessing.
+- Use the detection bounding boxes and depth values to reason about which \
+objects are touching, stacked, or contained.
+- Output only valid JSON. No markdown fences, no explanation outside the JSON.\
+"""
+
+SEMANTIC_CAPTION = """\
+You are writing an image caption for VLA (Vision-Language-Action) robot training data.
+
+Spatial layout detected by computer vision (use this to determine where things \
+are and what is in front of or behind what — do NOT quote these numbers directly):
+{scene_graph}
+
+Semantic properties and relationships extracted from the image:
+{semantic_annotation}
+
+Write a single natural paragraph that describes the scene. \
+The paragraph should cover:
+- Where the main objects are (use natural spatial language: \
+"on the left", "in the foreground", "behind the pool", \
+"in the upper-right corner" — never cite raw depth ranks or bounding boxes)
+- What the objects look like (color, material, texture, shape — \
+only what is clearly visible)
+- How objects relate to each other spatially or functionally \
+(e.g. "rests on", "is stacked inside", "sits beside") — \
+only when directly visible, using plain language
+
+Length: 80–150 words for scenes with 4 or fewer objects; \
+150–250 words for scenes with 5 or more objects.
+
+Rules:
+- Write one fluent paragraph; no lists, no section headers.
+- Every object should appear in the description with a natural spatial reference.
+- Translate depth/position data into plain English \
+(nearest object = "in the foreground", farthest = "in the background", etc.).
+- For medium-confidence properties use hedged language: \
+"appears to be", "looks like", "likely".
+- Avoid subjective, atmospheric, or emotive language: \
+adjectives such as beautiful, vibrant, charming, picturesque, inviting, elegant, \
+cozy, rustic, stunning, lush, luxurious, serene, relaxing, peaceful, and similar; \
+phrases like "creating a relaxing atmosphere", "offering a serene view", \
+"complementary elements", or any sentence that evaluates the mood or feeling \
+of the scene rather than describing what is physically present.
+- Do NOT mention "depth rank", "bounding box", "scene graph", \
+"computer vision", or any pipeline internals.
+- Do NOT predict future tasks, estimate weight, describe motion, \
+or infer events not directly visible.
+- Output only the paragraph text. No JSON, no markdown, no extra text.\
+"""
+
+SEMANTIC_VERIFY = """\
+Look at the image and the caption below. Answer only YES or NO:
+
+Does the caption contain any claim that is clearly wrong based on what \
+you can see? This includes: incorrect spatial positions (left/center/right \
+or near/far), wrong appearance (color, material, texture), wrong object \
+states, incorrect relationships between objects, or confident assertions \
+about things that cannot be determined from a single static image \
+(dynamics, object weight, events before or after the moment shown).
+
+Caption: {caption}\
+"""

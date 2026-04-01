@@ -43,7 +43,8 @@ class Config(BaseSettings):
     # --- Storage ---
     metadata_path: Path = Path("data/metadata.parquet")
     annotated_path: Path = Path("data/annotated.parquet")
-    scene_graph_path: Path = Path("data/scene_graphs.parquet")  # intermediate scene extraction output
+    scene_graph_path: Path = Path("data/scene_graphs.parquet")          # Stage 0 output
+    semantic_annotations_path: Path = Path("data/semantic_annotations.parquet")  # Stage 1 output
 
     # --- Annotation run control ---
     annotate_limit: int | None = None  # max rows to process per run; None = all

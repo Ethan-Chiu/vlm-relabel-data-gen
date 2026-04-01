@@ -13,11 +13,17 @@ Pipelines
   scene-graph  Uses pre-computed scene_graphs.parquet → 3 scene-conditioned VLM calls.
                Run extract_scene_graphs.py first.
 
+  semantic     Uses pre-computed scene_graphs.parquet + semantic_annotations.parquet
+               → 1 generation call → 1–3 focus-typed captions, optionally verified.
+               Run extract_scene_graphs.py then extract_semantic.py first.
+
 Usage:
     uv run python scripts/annotate.py
     uv run python scripts/annotate.py --pipeline relabel
     uv run python scripts/annotate.py --pipeline two-call
     uv run python scripts/annotate.py --pipeline scene-graph
+    uv run python scripts/annotate.py --pipeline semantic
+    uv run python scripts/annotate.py --pipeline semantic --verify
     uv run python scripts/annotate.py --pipeline robotic --no-verify
     uv run python scripts/annotate.py --config configs/qwen_vllm.toml
     uv run python scripts/annotate.py --config configs/scene_graph.toml --pipeline scene-graph
@@ -37,8 +43,12 @@ if __name__ == "__main__":
     parser.add_argument("--config", default="config.toml", help="Path to config TOML file")
     parser.add_argument(
         "--pipeline", default="robotic",
-        choices=["relabel", "two-call", "robotic", "scene-graph"],
+        choices=["relabel", "two-call", "robotic", "scene-graph", "semantic"],
         help="Pipeline to run (default: robotic)",
+    )
+    parser.add_argument(
+        "--verify", action="store_true",
+        help="Enable verification step (semantic pipeline: off by default; others: on by default)",
     )
     parser.add_argument("--no-verify", action="store_true", help="Skip verification step")
     parser.add_argument(
@@ -54,6 +64,11 @@ if __name__ == "__main__":
     cfg = datagen_config.load(args.config)
     overrides = {}
     if args.no_verify:
+        overrides["verify"] = False
+    elif args.verify:
+        overrides["verify"] = True
+    elif args.pipeline == "semantic":
+        # semantic pipeline defaults to verify=False; user must opt in with --verify
         overrides["verify"] = False
     if args.limit is not None:
         overrides["annotate_limit"] = args.limit
