@@ -4,6 +4,9 @@ Each template takes keyword arguments via .format(**kwargs).
 Keep prompt logic here and annotation logic in annotator.py.
 """
 
+from datagen.semantic.predicates import build_predicate_prompt_block as _build_pred_block
+_PREDICATE_VOCAB_BLOCK = _build_pred_block()
+
 TYPE_A = """\
 You are annotating images for robot manipulation training.
 
@@ -192,14 +195,7 @@ combine multiple traits if needed, e.g. 'white ceramic with glossy finish'; null
   ]
 }}
 
-Relationship predicate vocabulary by type:
-  part_whole:          belongs_to, has_part, is_lid_of, is_handle_of
-  set_membership:      set_with, matches, pairs_with
-  containment:         contains, filled_with, holds
-  support:             rests_on, stacked_on, mounted_on
-  functional_pairing:  used_with, placed_for, positioned_beside
-  activity_driven:     being_cut_by, being_poured_into, being_stirred_by
-  proximity_semantic:  belongs_near, stored_with
+__PREDICATE_VOCAB__
 
 Rules:
 - Include ONE entry in "objects" per numbered line in the scene graph — \
@@ -210,7 +206,7 @@ do not include it at all rather than guessing.
 - Use the detection bounding boxes and depth values to reason about which \
 objects are touching, stacked, or contained.
 - Output only valid JSON. No markdown fences, no explanation outside the JSON.\
-"""
+""".replace("__PREDICATE_VOCAB__", _PREDICATE_VOCAB_BLOCK)
 
 SEMANTIC_CAPTION = """\
 You are writing an image caption for VLA (Vision-Language-Action) robot training data.

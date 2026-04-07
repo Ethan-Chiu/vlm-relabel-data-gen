@@ -17,6 +17,7 @@ import re
 from loguru import logger
 
 from datagen import prompts
+from datagen.semantic.predicates import ALL_PREDICATES
 from datagen.semantic.models import (
     ObjectProperties,
     Relationship,
@@ -150,6 +151,10 @@ def _parse_response(raw: str, scene_graph: str) -> SemanticAnnotation:
         evidence = str(rel.get("evidence", "")).strip()
 
         if not subject or not obj_label or not predicate:
+            continue
+
+        if predicate not in ALL_PREDICATES:
+            logger.debug(f"Dropping relationship with unknown predicate '{predicate}'")
             continue
 
         # Subject must reference a detected object
