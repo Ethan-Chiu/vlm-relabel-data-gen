@@ -29,11 +29,18 @@ def download_image(url: str, timeout: int) -> Image.Image:
     return Image.open(io.BytesIO(response.content)).convert("RGB")
 
 
-def run(anns: list[Annotation], cfg: Config) -> None:
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    cfg.metadata_path.parent.mkdir(parents=True, exist_ok=True)
+def run(anns: list[Annotation], cfg: Config, output_path: Path | None = None) -> None:
+    """Download annotations and write metadata.
 
-    # Resume support: skip URLs already present in the metadata index.
+    output_path: if set, write results here instead of cfg.metadata_path.
+                 Skip logic always reads cfg.metadata_path (the canonical file)
+                 so changing the output path does not affect resume behavior.
+    """
+    out = output_path or cfg.metadata_path
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    # Resume support: skip URLs already present in the canonical metadata index.
     already_done: set[str] = set()
     if cfg.metadata_path.exists():
         existing = read_metadata(cfg.metadata_path)
@@ -83,11 +90,11 @@ def run(anns: list[Annotation], cfg: Config) -> None:
             error_counts["InvalidImage"] += 1
             stats["failed"] += 1
 
-    write_metadata(records, cfg.metadata_path)
+    write_metadata(records, out)
 
     logger.info(
         f"Done: {stats['success']}/{stats['total']} succeeded, "
-        f"{stats['failed']} failed, {stats['skipped']} skipped — index → {cfg.metadata_path}"
+        f"{stats['failed']} failed, {stats['skipped']} skipped — index → {out}"
     )
     if error_counts:
         logger.warning(

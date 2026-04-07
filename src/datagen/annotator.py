@@ -30,6 +30,7 @@ from datagen.annotators import (
     TwoCallAnnotator,
 )
 from datagen.config import Config
+from datagen.storage import shard_dataframe, staging_path
 
 
 # ── Worker process state ───────────────────────────────────────────────────────
@@ -82,7 +83,7 @@ def _annotate_row(row: dict) -> dict:
 
 # ── Pipeline runner ────────────────────────────────────────────────────────────
 
-def run(cfg: Config, pipeline: str = "robotic") -> None:
+def run(cfg: Config, pipeline: str = "robotic", shard_id: int = 0, num_shards: int = 1) -> None:
     """Run the chosen annotation pipeline over metadata_path.
 
     pipeline: "relabel"     — single VLM call with vlm_prompt → new_caption
@@ -100,6 +101,7 @@ def run(cfg: Config, pipeline: str = "robotic") -> None:
     logger.info(
         f"Starting annotation | pipeline={pipeline} "
         f"| backend={cfg.vlm_backend} | concurrency={cfg.concurrency} | verify={cfg.verify}"
+        + (f" | shard={shard_id}/{num_shards}" if num_shards > 1 else "")
     )
 
     df = pd.read_parquet(cfg.metadata_path)
@@ -113,6 +115,11 @@ def run(cfg: Config, pipeline: str = "robotic") -> None:
 
     existing_df = _load_existing(df, cfg)
 
+    # Assign this shard's subset of remaining work (after skip logic).
+    df = shard_dataframe(df, shard_id, num_shards)
+    if num_shards > 1:
+        logger.info(f"Shard {shard_id}/{num_shards}: {len(df)} rows assigned")
+
     if df.empty:
         logger.info("Nothing to process.")
         return
@@ -120,12 +127,20 @@ def run(cfg: Config, pipeline: str = "robotic") -> None:
     records, error_counts = _run_workers(df, cfg, pipeline)
 
     new_df = pd.DataFrame(records)
-    result_df = _merge_results(existing_df, new_df, cfg.overwrite)
 
-    cfg.annotated_path.parent.mkdir(parents=True, exist_ok=True)
-    result_df.to_parquet(cfg.annotated_path, index=False)
+    if num_shards > 1:
+        # Write to staging; merge.py will combine into canonical later.
+        out_path = staging_path(cfg.annotated_path, shard_id, num_shards)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        new_df.to_parquet(out_path, index=False)
+    else:
+        # Single-machine: merge with existing canonical (original behavior).
+        result_df = _merge_results(existing_df, new_df, cfg.overwrite)
+        cfg.annotated_path.parent.mkdir(parents=True, exist_ok=True)
+        result_df.to_parquet(cfg.annotated_path, index=False)
+        out_path = cfg.annotated_path
 
-    _log_summary(new_df, df, records, error_counts, pipeline, cfg.annotated_path)
+    _log_summary(new_df, df, records, error_counts, pipeline, out_path)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

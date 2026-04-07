@@ -36,6 +36,8 @@ if __name__ == "__main__":
         "--limit", type=int, default=None,
         help="Process only the first N rows of metadata (already-extracted rows are still skipped)",
     )
+    parser.add_argument("--shard-id", type=int, default=0, help="Index of this shard (0-based)")
+    parser.add_argument("--num-shards", type=int, default=1, help="Total number of shards")
     args = parser.parse_args()
 
     cfg = datagen_config.load(args.config)
@@ -47,4 +49,4 @@ if __name__ == "__main__":
     if overrides:
         cfg = cfg.model_copy(update=overrides)
 
-    run(cfg)
+    run(cfg, shard_id=args.shard_id, num_shards=args.num_shards)

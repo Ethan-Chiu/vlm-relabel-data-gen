@@ -29,6 +29,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from datagen.config import Config
+from datagen.storage import shard_dataframe, staging_path
 
 
 # ── Worker process state ───────────────────────────────────────────────────────
@@ -83,11 +84,15 @@ def _extract_row(row: dict) -> dict:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
-def run(cfg: Config) -> None:
+def run(cfg: Config, shard_id: int = 0, num_shards: int = 1) -> None:
     """Extract scene graphs for every image in metadata_path.
 
     Writes scene_graphs.parquet with columns:
       filename, scene_graph, scene_detections (JSON)
+
+    When num_shards > 1, only rows assigned to shard_id (by md5 hash) are
+    processed and results are written to a staging file. Run merge.py after
+    all shards complete to combine into the canonical scene_graphs.parquet.
     """
     if not cfg.metadata_path.exists():
         raise FileNotFoundError(
@@ -97,6 +102,7 @@ def run(cfg: Config) -> None:
     logger.info(
         f"Starting scene graph extraction | device={cfg.scene_device} "
         f"| concurrency={cfg.concurrency}"
+        + (f" | shard={shard_id}/{num_shards}" if num_shards > 1 else "")
     )
 
     df = pd.read_parquet(cfg.metadata_path)
@@ -106,16 +112,21 @@ def run(cfg: Config) -> None:
         df = df.head(cfg.annotate_limit)
         logger.info(f"Limiting to first {cfg.annotate_limit} rows")
 
-    # Skip rows already extracted if output exists
-    out_path = cfg.scene_graph_path
-    if out_path.exists():
-        existing = pd.read_parquet(out_path, columns=["filename"])
+    # Skip rows already extracted — always reads canonical file.
+    canonical_path = cfg.scene_graph_path
+    if canonical_path.exists():
+        existing = pd.read_parquet(canonical_path, columns=["filename"])
         done = set(existing["filename"])
         remaining = df[~df["filename"].isin(done)]
         logger.info(
             f"Resuming: {len(done)} already done, {len(remaining)} remaining"
         )
         df = remaining
+
+    # Assign this shard's subset of the remaining work.
+    df = shard_dataframe(df, shard_id, num_shards)
+    if num_shards > 1:
+        logger.info(f"Shard {shard_id}/{num_shards}: {len(df)} rows assigned")
 
     if df.empty:
         logger.info("All rows already extracted.")
@@ -146,10 +157,15 @@ def run(cfg: Config) -> None:
 
     result_df = pd.DataFrame(records)
 
-    # Append to existing output if resuming
-    if out_path.exists():
-        existing_df = pd.read_parquet(out_path)
-        result_df = pd.concat([existing_df, result_df], ignore_index=True)
+    if num_shards > 1:
+        # Write to staging; merge.py will combine into canonical later.
+        out_path = staging_path(canonical_path, shard_id, num_shards)
+    else:
+        # Single-machine: append directly to canonical (original behavior).
+        out_path = canonical_path
+        if out_path.exists():
+            existing_df = pd.read_parquet(out_path)
+            result_df = pd.concat([existing_df, result_df], ignore_index=True)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_parquet(out_path, index=False)

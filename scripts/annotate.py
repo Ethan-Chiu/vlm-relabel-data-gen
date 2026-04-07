@@ -59,6 +59,8 @@ if __name__ == "__main__":
         "--overwrite", action="store_true",
         help="Re-process rows already present in annotated.parquet (default: skip them)",
     )
+    parser.add_argument("--shard-id", type=int, default=0, help="Index of this shard (0-based)")
+    parser.add_argument("--num-shards", type=int, default=1, help="Total number of shards")
     args = parser.parse_args()
 
     cfg = datagen_config.load(args.config)
@@ -77,4 +79,4 @@ if __name__ == "__main__":
     if overrides:
         cfg = cfg.model_copy(update=overrides)
 
-    run(cfg, pipeline=args.pipeline)
+    run(cfg, pipeline=args.pipeline, shard_id=args.shard_id, num_shards=args.num_shards)

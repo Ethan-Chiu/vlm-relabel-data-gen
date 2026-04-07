@@ -2,9 +2,44 @@
 
 from __future__ import annotations
 
+import hashlib
+import time
 from pathlib import Path
 
 import pandas as pd
+
+
+def shard_dataframe(
+    df: pd.DataFrame,
+    shard_id: int,
+    num_shards: int,
+    key: str = "filename",
+) -> pd.DataFrame:
+    """Return only rows assigned to this shard by deterministic md5 hash.
+
+    Uses hashlib.md5 (not Python hash()) so results are consistent across
+    processes and machines regardless of PYTHONHASHSEED.
+    """
+    if num_shards <= 1:
+        return df
+    mask = df[key].map(
+        lambda x: int(hashlib.md5(x.encode()).hexdigest(), 16) % num_shards == shard_id
+    )
+    return df[mask]
+
+
+def staging_path(canonical_path: Path, shard_id: int, num_shards: int) -> Path:
+    """Return a unique staging file path for this shard run.
+
+    Naming: {stem}_shard{shard_id}_n{num_shards}_b{timestamp}.parquet
+    All staging files live in a _staging/ subdirectory next to the canonical file.
+    merge.py scans this directory to detect and merge pending work.
+    """
+    staging_dir = canonical_path.parent / "_staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    name = f"{canonical_path.stem}_shard{shard_id}_n{num_shards}_b{ts}.parquet"
+    return staging_dir / name
 
 
 def write_metadata(records: list[dict], path: Path) -> None:

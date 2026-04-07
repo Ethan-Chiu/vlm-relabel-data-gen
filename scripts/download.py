@@ -20,13 +20,24 @@ import datagen.config as datagen_config
 from datagen.download import Annotation, run
 
 
-def load_annotations(path: Path, limit: int | None) -> list[Annotation]:
-    """Stream-parse a JSON array, stopping early if limit is set."""
+def load_annotations(
+    path: Path,
+    limit: int | None,
+    shard_id: int = 0,
+    num_shards: int = 1,
+) -> list[Annotation]:
+    """Stream-parse a JSON array, sharding by stream index.
+
+    Shard assignment is by index (i % num_shards == shard_id) so that each
+    machine owns a deterministic, disjoint slice of the annotation stream.
+    The limit is applied after shard filtering (max items from this shard).
+    """
     with path.open("rb") as f:
         items = ijson.items(f, "item")
+        sharded = (ann for i, ann in enumerate(items) if i % num_shards == shard_id)
         if limit is not None:
-            items = itertools.islice(items, limit)
-        return list(items)
+            sharded = itertools.islice(sharded, limit)
+        return list(sharded)
 
 
 if __name__ == "__main__":
@@ -34,6 +45,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", default="config.toml", help="Path to config TOML file")
     parser.add_argument("--annotations", help="Path to annotations JSON file (overrides config)")
     parser.add_argument("--limit", type=int, help="Maximum number of annotations to download")
+    parser.add_argument("--shard-id", type=int, default=0, help="Index of this shard (0-based)")
+    parser.add_argument("--num-shards", type=int, default=1, help="Total number of shards")
     args = parser.parse_args()
 
     cfg = datagen_config.load(args.config)
@@ -41,5 +54,11 @@ if __name__ == "__main__":
     annotations_path = Path(args.annotations) if args.annotations else cfg.annotations_path
     limit = args.limit if args.limit is not None else cfg.download_limit
 
-    annotations = load_annotations(annotations_path, limit)
-    run(annotations, cfg)
+    annotations = load_annotations(annotations_path, limit, shard_id=args.shard_id, num_shards=args.num_shards)
+
+    output_path = None
+    if args.num_shards > 1:
+        from datagen.storage import staging_path
+        output_path = staging_path(cfg.metadata_path, args.shard_id, args.num_shards)
+
+    run(annotations, cfg, output_path=output_path)
