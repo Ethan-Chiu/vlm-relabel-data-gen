@@ -25,16 +25,23 @@ def load_annotations(
     limit: int | None,
     shard_id: int = 0,
     num_shards: int = 1,
-) -> list[Annotation]:
+) -> list[tuple[int, Annotation]]:
     """Stream-parse a JSON array, sharding by stream index.
 
-    Shard assignment is by index (i % num_shards == shard_id) so that each
-    machine owns a deterministic, disjoint slice of the annotation stream.
-    The limit is applied after shard filtering (max items from this shard).
+    Returns a list of (global_index, annotation) pairs.  The global_index is
+    the position of the annotation in the full (unsharded) JSON array and is
+    used by run() to derive stable, collision-free filenames across shards.
+
+    Shard assignment is by index (i % num_shards == shard_id) so each machine
+    owns a deterministic, disjoint slice.  The limit is applied after sharding.
     """
     with path.open("rb") as f:
         items = ijson.items(f, "item")
-        sharded = (ann for i, ann in enumerate(items) if i % num_shards == shard_id)
+        sharded = (
+            (i, ann)
+            for i, ann in enumerate(items)
+            if i % num_shards == shard_id
+        )
         if limit is not None:
             sharded = itertools.islice(sharded, limit)
         return list(sharded)

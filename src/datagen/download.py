@@ -25,8 +25,17 @@ class Annotation(TypedDict):
     url: str
 
 
-def run(anns: list[Annotation], cfg: Config, output_path: Path | None = None) -> None:
+def run(
+    anns: list[tuple[int, Annotation]],
+    cfg: Config,
+    output_path: Path | None = None,
+) -> None:
     """Download annotations and write metadata.
+
+    anns: list of (global_index, annotation) pairs produced by load_annotations().
+          The global_index is the position in the original (unsharded) annotation
+          file and is used to derive the output filename, ensuring no collisions
+          when multiple shards run in parallel on different machines.
 
     Each downloaded image is validated (PIL-loadable, meets min_image_pixels).
     All records are written to metadata.parquet with a ``valid`` boolean field.
@@ -48,7 +57,7 @@ def run(anns: list[Annotation], cfg: Config, output_path: Path | None = None) ->
         already_done = set(existing["source_url"].tolist())
         logger.info(f"Resuming — {len(already_done)} already downloaded, skipping those")
 
-    pending_count = sum(1 for a in anns if a["url"] not in already_done)
+    pending_count = sum(1 for _, a in anns if a["url"] not in already_done)
     stats = {
         "total": pending_count,
         "success": 0,
@@ -60,7 +69,7 @@ def run(anns: list[Annotation], cfg: Config, output_path: Path | None = None) ->
     records: list[dict] = []
     invalid_entries: list[dict] = []   # {filename, filter_reason} for filtered_download.parquet
 
-    for i, ann in enumerate(anns):
+    for global_idx, ann in anns:
         url = ann["url"]
         if url in already_done:
             continue
@@ -84,10 +93,12 @@ def run(anns: list[Annotation], cfg: Config, output_path: Path | None = None) ->
             continue
 
         # ── Step 2: determine filename ─────────────────────────────────────────
+        # Use global_idx (position in the full annotation file) so filenames are
+        # unique across shards even when multiple machines download in parallel.
         suffix = Path(url.split("?")[0]).suffix.lower()
         if suffix not in _KNOWN_SUFFIXES:
             suffix = ".jpg"
-        filename = f"{i:06d}{suffix}"
+        filename = f"{global_idx:06d}{suffix}"
 
         # ── Step 3: parse image and run validity checks ────────────────────────
         valid = True
