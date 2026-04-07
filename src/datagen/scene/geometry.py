@@ -259,3 +259,12 @@ def build_scene_graph(detections: list[Detection]) -> str:
         for d in detections
     ]
     return _build_scene_graph_text(_nms_dicts(dicts))
+
+
+def count_active_detections(dicts: list[dict]) -> int:
+    """Return the number of detections surviving NMS deduplication.
+
+    Public wrapper around _nms_dicts() so callers outside this module can get
+    the post-NMS count without importing the private function.
+    """
+    return len(_nms_dicts(dicts))

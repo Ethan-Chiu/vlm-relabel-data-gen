@@ -111,6 +111,13 @@ def run(cfg: Config, shard_id: int = 0, num_shards: int = 1) -> None:
     df = pd.read_parquet(cfg.scene_graph_path)
     logger.info(f"Scene graphs loaded: {len(df)} rows")
 
+    # Skip scenes marked invalid by the scene complexity filter (backward-compatible:
+    # if the valid column is absent, assume all rows are valid).
+    if "valid" in df.columns:
+        n_before = len(df)
+        df = df[df["valid"]]
+        logger.info(f"Valid scenes: {len(df)}/{n_before}")
+
     if cfg.annotate_limit is not None:
         df = df.head(cfg.annotate_limit)
         logger.info(f"Limiting to first {cfg.annotate_limit} rows")

@@ -45,6 +45,11 @@ class Config(BaseSettings):
     annotated_path: Path = Path("data/annotated.parquet")
     scene_graph_path: Path = Path("data/scene_graphs.parquet")          # Stage 0 output
     semantic_annotations_path: Path = Path("data/semantic_annotations.parquet")  # Stage 1 output
+    # --- Filtering ---
+    filtered_download_path: Path = Path("data/filtered_download.parquet")  # download validity audit
+    filtered_scene_path: Path = Path("data/filtered_scene.parquet")        # scene complexity audit
+    min_image_pixels: int = 64 * 64   # 4 096 px — rejects tiny stubs
+    min_scene_objects: int = 2         # post-NMS unique objects required to pass scene filter
 
     # --- Annotation run control ---
     annotate_limit: int | None = None  # max rows to process per run; None = all

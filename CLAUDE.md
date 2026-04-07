@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv sync                    # basic (API backends only)
 uv sync --extra scene      # include CV models (RAM++, GroundingDINO, SAM, Depth)
 
-# Download
+# Download (includes inline image validity check)
 uv run python scripts/download.py
 
 # Annotation pipelines
@@ -43,6 +43,20 @@ No test framework or linter is configured.
 Scene/semantic pipelines add pre-stages:
 - `extract_scene_graphs.py` → `scene_graphs.parquet` (GPU)
 - `extract_semantic.py` → `semantic_annotations.parquet` (API, requires scene graphs)
+
+**Filtering** is inline at each stage; downstream stages gate on a `valid` boolean column:
+- `download.py`: checks PIL-loadability and minimum pixel count → `metadata.parquet` (`valid` col) + `data/filtered_download.parquet` (`filename | filter_reason`)
+- `extract_scene_graphs.py`: reads only `valid=True` rows; checks post-NMS object count → `scene_graphs.parquet` (`valid`, `n_objects` cols) + `data/filtered_scene.parquet` (`filename | filter_reason`)
+- `extract_semantic.py`: reads only `valid=True` rows from `scene_graphs.parquet`
+
+Inspect filter audit logs:
+```bash
+uv run python scripts/show_parquet.py data/filtered_download.parquet
+uv run python scripts/show_parquet.py data/filtered_scene.parquet
+# Stats:
+python -c "import pandas as pd; print(pd.read_parquet('data/filtered_scene.parquet')['filter_reason'].value_counts())"
+```
+Config: `min_image_pixels` (default 4096 px), `min_scene_objects` (default 2)
 
 ### Configuration (`src/datagen/config.py`)
 Pydantic `BaseSettings` with priority: env vars (`DATAGEN_*` prefix) > `.env` > `config.toml` > defaults. Config is serialized to dict for `ProcessPoolExecutor` pickling — do not add non-serializable fields without updating `__reduce__`.
