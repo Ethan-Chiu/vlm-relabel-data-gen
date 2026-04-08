@@ -19,6 +19,6 @@ export SLURM_ARRAY_TASK_ID=0
 uv run python scripts/download.py \
     --config configs/semantic_10k.toml \
     --shard-id "$SLURM_ARRAY_TASK_ID" \
-    --num-shards "$NUM_SHARDS"
+    --num-shards "$NUM_SHARDS" 2>&1
 
 echo "Job finished."

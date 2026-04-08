@@ -29,6 +29,7 @@ def run(
     anns: list[tuple[int, Annotation]],
     cfg: Config,
     output_path: Path | None = None,
+    additional_skip_urls: set[str] | None = None,
 ) -> None:
     """Download annotations and write metadata.
 
@@ -45,6 +46,9 @@ def run(
     output_path: if set, write results here instead of cfg.metadata_path.
                  Skip logic always reads cfg.metadata_path (the canonical file)
                  so changing the output path does not affect resume behavior.
+    additional_skip_urls: extra URLs to skip in addition to those in cfg.metadata_path.
+                          Used by --skip-staging to avoid re-downloading from a
+                          partial staging file when rerunning a failed shard.
     """
     out = output_path or cfg.metadata_path
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
@@ -53,9 +57,14 @@ def run(
     # Resume support: skip URLs already present in the canonical metadata index.
     already_done: set[str] = set()
     if cfg.metadata_path.exists():
+        logger.info(f"Resuming — loading existing metadata from {cfg.metadata_path}")
         existing = read_metadata(cfg.metadata_path)
         already_done = set(existing["source_url"].tolist())
         logger.info(f"Resuming — {len(already_done)} already downloaded, skipping those")
+    if additional_skip_urls:
+        before = len(already_done)
+        already_done |= additional_skip_urls
+        logger.info(f"Staging skip — +{len(already_done) - before} URLs from existing staging files")
 
     pending_count = sum(1 for _, a in anns if a["url"] not in already_done)
     stats = {
@@ -124,6 +133,7 @@ def run(
         # ── Step 4: save file ──────────────────────────────────────────────────
         img_path = cfg.output_dir / filename
         if image is not None:
+            image.info.pop('transparency', None)
             image.save(img_path)
         else:
             # PIL couldn't parse it — save raw bytes so the file exists on disk

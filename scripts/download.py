@@ -54,6 +54,13 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, help="Maximum number of annotations to download")
     parser.add_argument("--shard-id", type=int, default=0, help="Index of this shard (0-based)")
     parser.add_argument("--num-shards", type=int, default=1, help="Total number of shards")
+    parser.add_argument(
+        "--skip-staging", action="store_true",
+        help=(
+            "Also skip URLs already present in this shard's existing staging files. "
+            "Use when rerunning a failed shard to avoid re-downloading already-fetched images."
+        ),
+    )
     args = parser.parse_args()
 
     cfg = datagen_config.load(args.config)
@@ -68,4 +75,17 @@ if __name__ == "__main__":
         from datagen.storage import staging_path
         output_path = staging_path(cfg.metadata_path, args.shard_id, args.num_shards)
 
-    run(annotations, cfg, output_path=output_path)
+    additional_skip_urls = None
+    if args.skip_staging and args.num_shards > 1:
+        import pandas as pd
+        staging_dir = cfg.metadata_path.parent / "_staging"
+        pattern = f"{cfg.metadata_path.stem}_shard{args.shard_id}_n{args.num_shards}_b*.parquet"
+        staging_files = sorted(staging_dir.glob(pattern)) if staging_dir.exists() else []
+        if staging_files:
+            additional_skip_urls = set()
+            for f in staging_files:
+                df = pd.read_parquet(f, columns=["source_url"])
+                additional_skip_urls.update(df["source_url"].tolist())
+            print(f"--skip-staging: {len(staging_files)} staging file(s), {len(additional_skip_urls)} URLs to skip")
+
+    run(annotations, cfg, output_path=output_path, additional_skip_urls=additional_skip_urls)
