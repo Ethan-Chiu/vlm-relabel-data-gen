@@ -1,0 +1,41 @@
+# Semantic caption pipeline — 10k output from 50k download
+#
+# Run order:
+#   1. uv run python scripts/download.py --config configs/semantic_10k.toml
+#   2. sbatch jobs/scene_graphs.sh    →  merge.py --stage scene_graphs ...
+#   3. sbatch jobs/semantic_extract.sh →  merge.py --stage semantic_annotations ...
+#   4. sbatch jobs/annotate.sh         →  merge.py --stage annotated ...
+#
+# See jobs/ for SLURM array scripts and DISTRIBUTED.md for full workflow.
+
+# ── Download ──────────────────────────────────────────────────────────────────
+annotations_path = "/data/user_data/ethanchi/laion_synthetic_filtered_large.json"
+output_dir       = "/data/user_data/ethanchi/laion/raw"
+timeout          = 10
+download_limit   = 50000
+
+# ── Paths (separate dir to avoid colliding with existing runs) ────────────────
+metadata_path             = "/data/user_data/ethanchi/laion/semantic_10k/metadata.parquet"
+scene_graph_path          = "/data/user_data/ethanchi/laion/semantic_10k/scene_graphs.parquet"
+semantic_annotations_path = "/data/user_data/ethanchi/laion/semantic_10k/semantic_annotations.parquet"
+annotated_path            = "/data/user_data/ethanchi/laion/semantic_10k/annotated.parquet"
+filtered_download_path    = "/data/user_data/ethanchi/laion/semantic_10k/filtered_download.parquet"
+filtered_scene_path       = "/data/user_data/ethanchi/laion/semantic_10k/filtered_scene.parquet"
+
+# ── VLM (used by semantic extraction + caption generation stages) ─────────────
+vlm_backend = "gemini"           # or "openai"
+vlm_model   = "gemini-2.0-flash" # or "gpt-4o-mini"
+concurrency = 1                  # base value; overridden via --concurrency in each job script
+verify      = false              # semantic pipeline default; pass --verify to annotate.sh to enable
+
+# ── Scene graph models (GPU stage — weights downloaded by setup_models.py) ────
+scene_ram_weights    = "models/ram_plus_swin_large_14m.pth"
+scene_gdino_config   = "models/GroundingDINO_SwinT_OGC.cfg.py"
+scene_gdino_weights  = "models/groundingdino_swint_ogc.pth"
+scene_sam_weights    = "models/sam_vit_h_4b8939.pth"
+scene_sam_type       = "vit_h"
+scene_depth_model    = "depth-anything/Depth-Anything-V2-Large-hf"
+scene_box_threshold  = 0.30
+scene_text_threshold = 0.25
+scene_ram_image_size = 384
+scene_device         = "cuda"
