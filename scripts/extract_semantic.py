@@ -14,6 +14,8 @@ Usage:
     uv run python scripts/extract_semantic.py --config configs/scene_graph.toml
     uv run python scripts/extract_semantic.py --limit 200
     uv run python scripts/extract_semantic.py --concurrency 16
+    uv run python scripts/extract_semantic.py --verify
+    uv run python scripts/extract_semantic.py --no-verify
 """
 
 import argparse
@@ -38,6 +40,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--shard-id", type=int, default=0, help="Index of this shard (0-based)")
     parser.add_argument("--num-shards", type=int, default=1, help="Total number of shards")
+    parser.add_argument("--verify", action="store_true", help="Enable verification step (overrides config)")
+    parser.add_argument("--no-verify", action="store_true", help="Disable verification step (overrides config)")
     args = parser.parse_args()
 
     cfg = datagen_config.load(args.config)
@@ -46,6 +50,10 @@ if __name__ == "__main__":
         overrides["concurrency"] = args.concurrency
     if args.limit is not None:
         overrides["annotate_limit"] = args.limit
+    if args.verify:
+        overrides["verify"] = True
+    elif args.no_verify:
+        overrides["verify"] = False
     if overrides:
         cfg = cfg.model_copy(update=overrides)
 
