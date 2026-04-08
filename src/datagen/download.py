@@ -68,6 +68,7 @@ def run(
     error_counts: dict[str, int] = defaultdict(int)
     records: list[dict] = []
     invalid_entries: list[dict] = []   # {filename, filter_reason} for filtered_download.parquet
+    _flush_every = 1000                # write to parquet every N successful records
 
     for global_idx, ann in anns:
         url = ann["url"]
@@ -148,8 +149,14 @@ def run(
             invalid_entries.append({"filename": filename, "filter_reason": filter_reason})
             logger.debug(f"[INVALID] {filename}: {filter_reason}")
 
-    # ── Flush results ──────────────────────────────────────────────────────────
-    write_metadata(records, out)
+        if len(records) >= _flush_every:
+            write_metadata(records, out)
+            records = []
+            logger.info(f"Flushed {_flush_every} records → {out} ({stats['success']} valid so far)")
+
+    # ── Final flush (remaining records) ───────────────────────────────────────
+    if records:
+        write_metadata(records, out)
 
     if invalid_entries:
         cfg.filtered_download_path.parent.mkdir(parents=True, exist_ok=True)
