@@ -23,8 +23,9 @@ filtered_download_path    = "/data/user_data/ethanchi/laion/semantic_10k/filtere
 filtered_scene_path       = "/data/user_data/ethanchi/laion/semantic_10k/filtered_scene.parquet"
 
 # ── VLM (used by semantic extraction + caption generation stages) ─────────────
-vlm_backend = "gemini"           # or "openai"
-vlm_model   = "gemini-2.0-flash" # or "gpt-4o-mini"
+vlm_backend = "vllm"
+vlm_model = "Qwen/Qwen3-VL-8B-Instruct"
+vlm_base_url = "http://localhost:8000/v1"
 concurrency = 1                  # base value; overridden via --concurrency in each job script
 verify      = false              # semantic pipeline default; pass --verify to annotate.sh to enable
 
