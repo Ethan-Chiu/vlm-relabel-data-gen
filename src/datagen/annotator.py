@@ -30,7 +30,7 @@ from datagen.annotators import (
     TwoCallAnnotator,
 )
 from datagen.config import Config
-from datagen.storage import shard_dataframe, staging_path
+from datagen.storage import shard_dataframe, staging_path, write_metadata
 
 
 # ── Worker process state ───────────────────────────────────────────────────────
@@ -124,23 +124,28 @@ def run(cfg: Config, pipeline: str = "robotic", shard_id: int = 0, num_shards: i
         logger.info("Nothing to process.")
         return
 
-    records, error_counts = _run_workers(df, cfg, pipeline)
-
-    new_df = pd.DataFrame(records)
-
     if num_shards > 1:
-        # Write to staging; merge.py will combine into canonical later.
         out_path = staging_path(cfg.annotated_path, shard_id, num_shards)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        new_df.to_parquet(out_path, index=False)
-    else:
-        # Single-machine: merge with existing canonical (original behavior).
+        success_count, error_counts = _run_workers(df, cfg, pipeline, out_path)
+    elif cfg.overwrite:
+        # overwrite=True: collect everything first, then merge-replace to avoid duplicates.
+        tmp_path = staging_path(cfg.annotated_path, shard_id=0, num_shards=1)
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        success_count, error_counts = _run_workers(df, cfg, pipeline, tmp_path)
+        new_df = pd.read_parquet(tmp_path) if tmp_path.exists() else pd.DataFrame()
         result_df = _merge_results(existing_df, new_df, cfg.overwrite)
         cfg.annotated_path.parent.mkdir(parents=True, exist_ok=True)
         result_df.to_parquet(cfg.annotated_path, index=False)
+        tmp_path.unlink(missing_ok=True)
+        out_path = cfg.annotated_path
+    else:
+        # overwrite=False (default): _load_existing already filtered done rows; safe to append.
+        cfg.annotated_path.parent.mkdir(parents=True, exist_ok=True)
+        success_count, error_counts = _run_workers(df, cfg, pipeline, cfg.annotated_path)
         out_path = cfg.annotated_path
 
-    _log_summary(new_df, df, records, error_counts, pipeline, out_path)
+    _log_summary(success_count, len(df), error_counts, pipeline, out_path)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -201,10 +206,11 @@ def _load_existing(df: pd.DataFrame, cfg: Config) -> pd.DataFrame | None:
 
 
 def _run_workers(
-    df: pd.DataFrame, cfg: Config, pipeline: str
-) -> tuple[list[dict], dict[str, int]]:
-    records: list[dict] = []
+    df: pd.DataFrame, cfg: Config, pipeline: str, out_path: Path, flush_every: int = 50
+) -> tuple[int, dict[str, int]]:
+    buffer: list[dict] = []
     error_counts: dict[str, int] = defaultdict(int)
+    success_count = 0
     with ProcessPoolExecutor(
         max_workers=cfg.concurrency,
         initializer=_worker_init,
@@ -216,10 +222,21 @@ def _run_workers(
         }
         for future in tqdm(as_completed(futures), total=len(futures), desc="Annotating"):
             try:
-                records.append(future.result())
+                buffer.append(future.result())
             except Exception as e:
                 error_counts[type(e).__name__] += 1
-    return records, error_counts
+
+            if len(buffer) >= flush_every:
+                write_metadata(buffer, out_path)
+                success_count += len(buffer)
+                logger.info(f"Flushed {flush_every} records ({success_count} total) → {out_path}")
+                buffer.clear()
+
+    if buffer:
+        write_metadata(buffer, out_path)
+        success_count += len(buffer)
+
+    return success_count, error_counts
 
 
 def _merge_results(
@@ -244,19 +261,13 @@ _CAPTION_TYPES_BY_PIPELINE: dict[str, tuple[str, ...]] = {
 
 
 def _log_summary(
-    new_df: pd.DataFrame,
-    df: pd.DataFrame,
-    records: list[dict],
+    success_count: int,
+    total: int,
     error_counts: dict[str, int],
     pipeline: str,
     out_path: Path,
 ) -> None:
-    logger.info(f"Done: {len(records)}/{len(df)} succeeded → {out_path}")
-    for col in _CAPTION_TYPES_BY_PIPELINE.get(pipeline, ()):
-        if col not in new_df.columns:
-            continue
-        kept = new_df[col].notna().sum()
-        logger.info(f"  {col}: {kept}/{len(new_df)} kept after verification")
+    logger.info(f"Done: {success_count}/{total} succeeded → {out_path}")
     if error_counts:
         logger.warning(
             "Row errors: " + ", ".join(f"{k}: {v}" for k, v in error_counts.items())
