@@ -25,6 +25,7 @@ Usage (via extract_semantic.py)
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -57,7 +58,21 @@ def _worker_init(cfg: Config) -> None:
         _worker_verifier = SemanticVerifier(backend=backend)
 
 
+_MAX_DETECTIONS = 25  # keep the N largest objects to stay within model context limits
+
+
 def _extract_row(row: dict) -> dict:
+    # Truncate to the N largest objects (by area_rank ascending, rank 1 = largest).
+    # This keeps the most visually prominent objects and caps prompt length regardless
+    # of how many objects GroundingDINO detected.
+    try:
+        detections = json.loads(row["scene_detections"])
+        if len(detections) > _MAX_DETECTIONS:
+            detections = sorted(detections, key=lambda d: d["area_rank"])[:_MAX_DETECTIONS]
+            row = {**row, "scene_detections": json.dumps(detections)}
+    except (json.JSONDecodeError, TypeError, KeyError):
+        pass  # malformed detections — pass through and let the extractor handle it
+
     img_bytes = (_worker_img_dir / row["filename"]).read_bytes()
     try:
         annotation = _worker_extractor.extract(

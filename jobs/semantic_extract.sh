@@ -26,7 +26,7 @@ NUM_SHARDS=8    # keep in sync with --array upper bound + 1
 # ── Start vLLM server in background ──────────────────────────────────────────
 uvx vllm serve Qwen/Qwen3-VL-8B-Instruct \
     --port 8000 \
-    --max-model-len 8192 \
+    --max-model-len 32768 \
     --trust-remote-code &
 VLLM_PID=$!
 trap "kill $VLLM_PID 2>/dev/null" EXIT
