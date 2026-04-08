@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=download
-#SBATCH --partition=general
+#SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=12:00:00
