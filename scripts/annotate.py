@@ -25,6 +25,7 @@ Usage:
     uv run python scripts/annotate.py --pipeline semantic
     uv run python scripts/annotate.py --pipeline semantic --verify
     uv run python scripts/annotate.py --pipeline robotic --no-verify
+    uv run python scripts/annotate.py --concurrency 8
     uv run python scripts/annotate.py --config configs/qwen_vllm.toml
     uv run python scripts/annotate.py --config configs/scene_graph.toml --pipeline scene-graph
 """
@@ -52,6 +53,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--no-verify", action="store_true", help="Skip verification step")
     parser.add_argument(
+        "--concurrency", type=int, default=None,
+        help="Number of API workers (overrides config)",
+    )
+    parser.add_argument(
         "--limit", type=int, default=None,
         help="Max number of rows to process in this run (after skipping already-done rows)",
     )
@@ -65,6 +70,8 @@ if __name__ == "__main__":
 
     cfg = datagen_config.load(args.config)
     overrides = {}
+    if args.concurrency is not None:
+        overrides["concurrency"] = args.concurrency
     if args.no_verify:
         overrides["verify"] = False
     elif args.verify:
