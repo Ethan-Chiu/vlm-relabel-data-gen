@@ -34,7 +34,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from datagen.config import Config
-from datagen.storage import shard_dataframe, staging_path
+from datagen.storage import shard_dataframe, staging_path, write_metadata
 
 
 # ── Worker process state ───────────────────────────────────────────────────────
@@ -139,8 +139,17 @@ def run(cfg: Config, shard_id: int = 0, num_shards: int = 1) -> None:
         logger.info("All rows already extracted.")
         return
 
-    records: list[dict] = []
+    # Determine output path before the loop so periodic flushes know where to write.
+    if num_shards > 1:
+        out_path = staging_path(canonical_path, shard_id, num_shards)
+    else:
+        out_path = canonical_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _flush_every = 100
+    buffer: list[dict] = []
     error_counts: dict[str, int] = defaultdict(int)
+    success_count = 0
 
     with ProcessPoolExecutor(
         max_workers=cfg.concurrency,
@@ -153,31 +162,27 @@ def run(cfg: Config, shard_id: int = 0, num_shards: int = 1) -> None:
         }
         for future in tqdm(as_completed(futures), total=len(futures), desc="Extracting semantics"):
             try:
-                records.append(future.result())
+                buffer.append(future.result())
             except Exception as e:
                 error_counts[type(e).__name__] += 1
                 logger.debug(f"Row error: {e}")
 
-    if not records:
+            if len(buffer) >= _flush_every:
+                write_metadata(buffer, out_path)
+                success_count += len(buffer)
+                logger.info(f"Flushed {_flush_every} records ({success_count} total) → {out_path}")
+                buffer.clear()
+
+    # Final flush for any remaining records.
+    if buffer:
+        write_metadata(buffer, out_path)
+        success_count += len(buffer)
+
+    if success_count == 0:
         logger.warning("No records extracted.")
         return
 
-    result_df = pd.DataFrame(records)
-
-    if num_shards > 1:
-        # Write to staging; merge.py will combine into canonical later.
-        out_path = staging_path(canonical_path, shard_id, num_shards)
-    else:
-        # Single-machine: append directly to canonical (original behavior).
-        out_path = canonical_path
-        if out_path.exists():
-            existing_df = pd.read_parquet(out_path)
-            result_df = pd.concat([existing_df, result_df], ignore_index=True)
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    result_df.to_parquet(out_path, index=False)
-
-    logger.info(f"Done: {len(records)} extracted → {out_path}")
+    logger.info(f"Done: {success_count} extracted → {out_path}")
     if error_counts:
         logger.warning(
             "Row errors: " + ", ".join(f"{k}: {v}" for k, v in error_counts.items())
