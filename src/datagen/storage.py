@@ -42,6 +42,19 @@ def staging_path(canonical_path: Path, shard_id: int, num_shards: int) -> Path:
     return staging_dir / name
 
 
+def find_staging_files(canonical_path: Path, shard_id: int, num_shards: int) -> list[Path]:
+    """Return existing staging files for this shard, sorted oldest-first.
+
+    Matches files created by staging_path() with the same shard_id / num_shards.
+    Returns an empty list if the staging directory does not exist or has no matches.
+    """
+    staging_dir = canonical_path.parent / "_staging"
+    if not staging_dir.exists():
+        return []
+    pattern = f"{canonical_path.stem}_shard{shard_id}_n{num_shards}_b*.parquet"
+    return sorted(staging_dir.glob(pattern))
+
+
 def write_metadata(records: list[dict], path: Path) -> None:
     """Write records to a Parquet file, appending if the file already exists."""
     df_new = pd.DataFrame(records)

@@ -35,7 +35,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from datagen.config import Config
-from datagen.storage import shard_dataframe, staging_path, write_metadata
+from datagen.storage import find_staging_files, shard_dataframe, staging_path, write_metadata
 
 
 # ── Worker process state ───────────────────────────────────────────────────────
@@ -154,12 +154,29 @@ def run(cfg: Config, shard_id: int = 0, num_shards: int = 1) -> None:
         logger.info("All rows already extracted.")
         return
 
-    # Determine output path before the loop so periodic flushes know where to write.
+    # Determine output path; for shard mode, resume from an existing staging file if present.
     if num_shards > 1:
-        out_path = staging_path(canonical_path, shard_id, num_shards)
+        existing_staging = find_staging_files(canonical_path, shard_id, num_shards)
+        if existing_staging:
+            staging_dfs = [pd.read_parquet(f, columns=["filename"]) for f in existing_staging]
+            staging_done = set(pd.concat(staging_dfs)["filename"].tolist())
+            df = df[~df["filename"].isin(staging_done)]
+            logger.info(
+                f"Resuming shard {shard_id}: found {len(existing_staging)} staging file(s) "
+                f"with {len(staging_done)} records already done, {len(df)} remaining"
+            )
+            out_path = existing_staging[-1]  # append to the most recent staging file
+            logger.info(f"Appending to existing staging file: {out_path.name}")
+        else:
+            out_path = staging_path(canonical_path, shard_id, num_shards)
+            logger.info(f"New staging file: {out_path.name}")
     else:
         out_path = canonical_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if df.empty:
+        logger.info("All shard rows already in staging — nothing to process.")
+        return
 
     _flush_every = 100
     buffer: list[dict] = []
