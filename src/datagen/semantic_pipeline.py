@@ -178,7 +178,7 @@ def run(cfg: Config, shard_id: int = 0, num_shards: int = 1) -> None:
         logger.info("All shard rows already in staging — nothing to process.")
         return
 
-    _flush_every = 100
+    _flush_every = 50
     buffer: list[dict] = []
     error_counts: dict[str, int] = defaultdict(int)
     success_count = 0
